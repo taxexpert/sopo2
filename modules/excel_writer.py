@@ -74,6 +74,33 @@ def _applied_rate_value(currency: str, value) -> float:
     return round_applied_rate(currency, value)
 
 
+def _lazada_item_date(item: dict, lazada_result: dict = None, fallback: str = "") -> str:
+    """라자다 주문 Excel은 deliveredDate, 기존 PDF는 문서 기준일을 사용합니다."""
+    item = item or {}
+    lazada_result = lazada_result or {}
+    return (item.get("date") or item.get("delivered_date") or fallback
+            or lazada_result.get("write_date") or lazada_result.get("period_end") or "")
+
+
+def _lazada_item_rate(item: dict, currency: str, rates: dict,
+                       lazada_result: dict = None, avg_rate: float = None) -> float:
+    """라자다 주문 Excel은 배송완료일 일별환율, 기존 소포수령증 PDF는 기간평균환율."""
+    item = item or {}
+    source_kind = item.get("source_kind") or (lazada_result or {}).get("source_kind")
+    item_date = item.get("date") or item.get("delivered_date")
+    if source_kind == "order_excel" or item_date:
+        return _get_rate(rates, currency, item_date)
+    base = avg_rate if avg_rate is not None else rates.get(currency, {}).get("average", 0.0)
+    return _applied_rate_value(currency, base)
+
+
+def _lazada_source_sheet_name(lazada_result: dict) -> str:
+    items = (lazada_result or {}).get("items", [])
+    if any((it.get("source_kind") == "order_excel") for it in items):
+        return "라자다(주문내역)"
+    return "라자다(소포수령증)"
+
+
 def _smbs_display_rate(currency: str, value):
     """환율(통화) 시트 표시용 SMBS 고시단위 값을 반환합니다."""
     if value in (None, ''):
@@ -510,13 +537,13 @@ def write_currency_template_sheet(ws, currency: str,
     ws.column_dimensions['F'].width = 14
     ws.column_dimensions['G'].width = 14
 
-    # 라자다 환율: 큐텐과 동일하게 평균환율 사용
-    lazada_rate = _applied_rate_value(
+    # 라자다 PDF는 기간평균환율, 주문내역 Excel은 deliveredDate 일별환율을 사용합니다.
+    lazada_avg_rate = _applied_rate_value(
         currency,
         lazada_rate_override if lazada_rate_override is not None
         else rates.get(currency, {}).get('average', 0.0),
     )
-    divisor     = RATE_DIVISOR.get(currency, 1)
+    divisor = RATE_DIVISOR.get(currency, 1)
 
     # ── 쇼피 소계: 같은 통화의 PDF가 여러 개여도 모두 합산합니다. ──
     if isinstance(shopee_data, list):
@@ -552,8 +579,13 @@ def write_currency_template_sheet(ws, currency: str,
     )
 
     # ── 라자다 소계 ──
-    lazada_fx  = sum(it['amount'] for it in lazada_items)
-    lazada_krw = round(lazada_fx * lazada_rate / divisor)
+    lazada_fx = 0.0
+    lazada_krw = 0
+    for it in lazada_items:
+        amount = float(it.get('amount', 0) or 0)
+        item_rate = _lazada_item_rate(it, currency, rates, avg_rate=lazada_avg_rate)
+        lazada_fx += amount
+        lazada_krw += round(amount * item_rate / divisor)
 
     # ── 이베이/린코스 소계: 발행월 기준 월평균 환율 사용 ──
     from .exchange_rate import monthly_avg_rate_for_month
@@ -606,11 +638,14 @@ def write_currency_template_sheet(ws, currency: str,
             _style(c, font=FONT_DEFAULT, align=CENTER, border=THIN_BORDER, num_format=nf)
         data_row += 1
 
-    # ── 라자다 거래 (발행일 기준 환율 적용) ──
+    # ── 라자다 거래: 주문 Excel은 deliveredDate, 기존 PDF는 문서 기준일 ──
     for it in lazada_items:
-        krw = round(it['amount'] * lazada_rate / divisor)
-        date_int_laz = _date_to_int(lazada_write_date)
-        row_vals = ['', 1, date_int_laz, currency, lazada_rate, it['amount'], krw]
+        amount = float(it.get('amount', 0) or 0)
+        item_date = _lazada_item_date(it, fallback=lazada_write_date)
+        item_rate = _lazada_item_rate(it, currency, rates, avg_rate=lazada_avg_rate)
+        krw = round(amount * item_rate / divisor)
+        date_int_laz = _date_to_int(item_date)
+        row_vals = ['', 1, date_int_laz, currency, item_rate, amount, krw]
         for col, v in enumerate(row_vals, 1):
             c = ws.cell(row=data_row, column=col, value=v)
             nf = {5: _applied_rate_format(currency), 6: NUM_FMT2, 7: NUM_FMT}.get(col)
@@ -632,10 +667,80 @@ def write_currency_template_sheet(ws, currency: str,
         data_row += 1
 
 
-# ── 라자다 소포수령증 시트 ───────────────────────────────────────
+# ── 라자다 소포수령증 / 주문내역 시트 ────────────────────────────
+
+def write_lazada_order_sheet(ws, lazada_data: dict, rates: dict):
+    """라자다 Seller Center 주문내역 Excel의 paidPrice/deliveredDate 상세."""
+    widths = {
+        'A': 13, 'B': 10, 'C': 18, 'D': 20, 'E': 22, 'F': 18,
+        'G': 10, 'H': 16, 'I': 12, 'J': 16, 'K': 24,
+    }
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    ws['A1'] = '라자다 주문내역 집계'
+    _style(ws['A1'], font=FONT_TITLE, align=CENTER)
+    ws.merge_cells('A1:K1')
+    ws['A2'] = '거래기간'
+    ws['B2'] = f"{lazada_data.get('period_start','')} ~ {lazada_data.get('period_end','')}"
+    ws['D2'] = '매출 기준'
+    ws['E2'] = 'paidPrice'
+    ws['G2'] = '날짜 기준'
+    ws['H2'] = 'deliveredDate'
+    ws['A3'] = '원본 파일'
+    ws['B3'] = ', '.join(lazada_data.get('source_files', []) or [])
+
+    headers = ['배송완료일', '도착국', '주문번호', '주문상품번호', '송장번호', '배송사',
+               '통화', 'Paid Price', '적용환율', '원화금액', '원본파일']
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=5, column=col, value=h)
+        _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
+
+    r = 6
+    totals = {}
+    items = sorted(lazada_data.get('items', []), key=lambda it: (
+        it.get('date') or '', it.get('currency') or '', it.get('tracking_no') or ''
+    ))
+    for it in items:
+        cur = it.get('currency', '')
+        amount = float(it.get('amount', 0) or 0)
+        rate = _lazada_item_rate(it, cur, rates, lazada_result=lazada_data)
+        krw = round(amount * rate)
+        vals = [
+            _lazada_item_date(it, lazada_data), it.get('destination', ''), it.get('order_number', ''),
+            it.get('order_item_id', ''), it.get('tracking_no', ''), it.get('carrier', ''),
+            cur, amount, rate, krw, it.get('source_file', ''),
+        ]
+        for col, value in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=value)
+            nf = {8: NUM_FMT2, 9: _applied_rate_format(cur), 10: NUM_FMT}.get(col)
+            _style(c, font=FONT_DEFAULT, align=RIGHT if col in (8, 9, 10) else CENTER,
+                   border=THIN_BORDER, num_format=nf)
+        bucket = totals.setdefault(cur, {'fx': 0.0, 'krw': 0, 'qty': 0})
+        bucket['fx'] += amount
+        bucket['krw'] += krw
+        bucket['qty'] += int(it.get('qty', 1) or 1)
+        r += 1
+
+    r += 1
+    for cur in _ordered_currencies(totals.keys()):
+        data = totals[cur]
+        ws.cell(row=r, column=1, value=f'{cur} 합계')
+        ws.cell(row=r, column=7, value=cur)
+        ws.cell(row=r, column=8, value=data['fx'])
+        ws.cell(row=r, column=10, value=data['krw'])
+        for col in range(1, 12):
+            c = ws.cell(row=r, column=col)
+            nf = {8: NUM_FMT2, 10: NUM_FMT}.get(col)
+            _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (8, 10) else CENTER,
+                   border=THIN_BORDER, num_format=nf)
+        r += 1
+
 
 def write_lazada_receipt_sheet(ws, lazada_data: dict, rates: dict, submitter: dict = None):
-    """라자다(소포수령증) 시트"""
+    """라자다 PDF 소포수령증 또는 주문내역 Excel 원본 시트."""
+    if any(it.get('source_kind') == 'order_excel' for it in lazada_data.get('items', [])):
+        return write_lazada_order_sheet(ws, lazada_data, rates)
     ws.column_dimensions['A'].width = 60
     ws.column_dimensions['B'].width = 12
     ws.column_dimensions['C'].width = 8
@@ -703,6 +808,50 @@ def write_lazada_receipt_sheet(ws, lazada_data: dict, rates: dict, submitter: di
             c = ws.cell(row=r, column=col, value=v)
             _style(c, font=FONT_DEFAULT, align=CENTER, border=THIN_BORDER)
 
+
+
+def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: dict, lazada_result: dict):
+    """통화별 라자다 상세 시트. 주문 Excel은 deliveredDate 일별 환율을 사용합니다."""
+    widths = {'A': 8, 'B': 13, 'C': 18, 'D': 20, 'E': 22, 'F': 18, 'G': 16, 'H': 12, 'I': 16, 'J': 24}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    ws['A1'] = f'라자다 {currency} 상세'
+    _style(ws['A1'], font=FONT_TITLE, align=CENTER)
+    ws.merge_cells('A1:J1')
+    headers = ['No', '배송완료일', '주문번호', '주문상품번호', '송장번호', '배송사', '외화금액', '환율', '원화금액', '원본파일']
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=3, column=col, value=h)
+        _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
+
+    avg_rate = None
+    if lazada_result and lazada_result.get('period_start') and lazada_result.get('period_end'):
+        from .exchange_rate import avg_rate_for_period
+        avg_rate = avg_rate_for_period(rates.get(currency), lazada_result.get('period_start'), lazada_result.get('period_end'))
+
+    total_fx = 0.0
+    total_krw = 0
+    for idx, it in enumerate(sorted(items, key=lambda x: (x.get('date') or '', x.get('tracking_no') or '')), 1):
+        amount = float(it.get('amount', 0) or 0)
+        rate = _lazada_item_rate(it, currency, rates, lazada_result, avg_rate)
+        krw = round(amount * rate)
+        vals = [idx, _lazada_item_date(it, lazada_result), it.get('order_number',''), it.get('order_item_id',''),
+                it.get('tracking_no',''), it.get('carrier',''), amount, rate, krw, it.get('source_file','')]
+        row = idx + 3
+        for col, value in enumerate(vals, 1):
+            c = ws.cell(row=row, column=col, value=value)
+            nf = {7: NUM_FMT2, 8: _applied_rate_format(currency), 9: NUM_FMT}.get(col)
+            _style(c, font=FONT_DEFAULT, align=RIGHT if col in (7,8,9) else CENTER, border=THIN_BORDER, num_format=nf)
+        total_fx += amount
+        total_krw += krw
+
+    total_row = len(items) + 5
+    ws.cell(total_row, 1, '합계')
+    ws.cell(total_row, 7, total_fx)
+    ws.cell(total_row, 9, total_krw)
+    for col in range(1, 11):
+        c = ws.cell(total_row, col)
+        nf = {7: NUM_FMT2, 9: NUM_FMT}.get(col)
+        _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (7,9) else CENTER, border=THIN_BORDER, num_format=nf)
 
 
 # ── 이베이/린코스 소포수령증 시트 ───────────────────────────────
@@ -1178,7 +1327,7 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
     월별집계 시트 작성.
     기준일은 각 문서의 수출실적/통화 시트에 들어가는 선(기)적일자와 동일하게 봅니다.
     - 쇼피: 거래별 발행일(tx['date'])
-    - 라자다: 라자다 작성일자(write_date) 또는 기간 종료일
+    - 라자다 주문 Excel: deliveredDate / 기존 PDF: 작성일자 또는 기간 종료일
     - 큐텐: 입력 건별 거래기간 종료일(상반기 6월 말/하반기 12월 말)
     """
     NUM = '#,##0'
@@ -1230,9 +1379,9 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
                 'fx': amount, 'krw': krw,
             })
 
-    # 라자다: 작성일자/기간종료일 기준
+    # 라자다: 주문 Excel은 deliveredDate 기준, 기존 PDF는 문서 기준일
     if lazada_result and lazada_result.get('items'):
-        date_value = lazada_write_date or lazada_result.get('write_date') or lazada_result.get('period_end') or ''
+        fallback_date = lazada_write_date or lazada_result.get('write_date') or lazada_result.get('period_end') or ''
         for it in lazada_result.get('items', []):
             cur = it.get('currency', '')
             if not cur:
@@ -1240,7 +1389,10 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
             amount = float(it.get('amount', 0) or 0)
             qty = int(it.get('qty', 0) or 0)
             div = RATE_DIVISOR.get(cur, 1)
-            rate = _applied_rate_value(cur, lazada_avg_rates.get(cur, rates.get(cur, {}).get('average', 0.0)))
+            date_value = _lazada_item_date(it, lazada_result, fallback_date)
+            rate = _lazada_item_rate(
+                it, cur, rates, lazada_result, lazada_avg_rates.get(cur)
+            )
             krw = round(amount * rate / div)
             rows.append({
                 'month': _month_label_from_date(date_value),
@@ -1493,17 +1645,19 @@ def generate_excel(
         shopee_totals[cur]['krw'] += total_krw
 
     if lazada_result:
-        laz_rate_by_cur = {}
         for it in lazada_result.get('items', []):
             cur = it.get('currency', '')
-            if cur not in laz_rate_by_cur:
-                laz_rate_by_cur[cur] = lazada_avg_rates.get(cur, rates.get(cur, {}).get('average', 0.0))
-            rate = laz_rate_by_cur[cur]
-            div  = RATE_DIVISOR.get(cur, 1)
-            krw  = round(it.get('amount', 0.0) * rate / div)
+            if not cur:
+                continue
+            amount = float(it.get('amount', 0) or 0)
+            rate = _lazada_item_rate(
+                it, cur, rates, lazada_result, lazada_avg_rates.get(cur)
+            )
+            div = RATE_DIVISOR.get(cur, 1)
+            krw = round(amount * rate / div)
             if cur not in lazada_totals:
                 lazada_totals[cur] = {'fx': 0.0, 'krw': 0}
-            lazada_totals[cur]['fx']  += it.get('amount', 0.0)
+            lazada_totals[cur]['fx'] += amount
             lazada_totals[cur]['krw'] += krw
 
     # 이베이/린코스: 발행월 기준 월평균 매매기준율 사용
@@ -1600,20 +1754,17 @@ def generate_excel(
             ws = wb.create_sheet(sheet_name)
             write_shopee_sheet(ws, sd, rates, submitter=sd.get('submitter') or report_submitter)
 
-    # ── 라자다(소포수령증) + 라자다(국가별)
-    # 라자다 PDF가 있을 때만 생성하고, 통화별 라자다 시트도 실제 통화만 생성합니다.
+    # ── 라자다 원본/주문내역 + 통화별 상세
     if _has_lazada_data(lazada_result):
-        ws_laz = wb.create_sheet('라자다(소포수령증)')
+        lazada_source_sheet = _lazada_source_sheet_name(lazada_result)
+        ws_laz = wb.create_sheet(lazada_source_sheet)
         write_lazada_receipt_sheet(ws_laz, lazada_result, rates, submitter=report_submitter)
 
         for cur in lazada_currencies:
             ws = wb.create_sheet(f'라자다({cur})')
             items = [it for it in lazada_result.get('items', []) if it.get('currency') == cur]
             if items:
-                headers = ['No', 'OBD DT', 'HBL No', 'MBL No', 'POL', 'POD', 'PKG', 'PKG Unit', 'G.WT', 'C.WT']
-                for col, h in enumerate(headers, 1):
-                    c = ws.cell(row=2, column=col, value=h)
-                    _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
+                write_lazada_currency_detail_sheet(ws, cur, items, rates, lazada_result)
 
     # ── 이베이/린코스 원본 PDF별 시트
     ebay_sheet_names = _ebay_sheet_names_for_results(ebay_results)
@@ -1634,7 +1785,7 @@ def generate_excel(
         keep_sheets.update({'JPY', '큐텐(소포수령증)'})
     keep_sheets.update(_shopee_sheet_names_for_results(shopee_results, shopee_currencies))
     if _has_lazada_data(lazada_result):
-        keep_sheets.add('라자다(소포수령증)')
+        keep_sheets.add(_lazada_source_sheet_name(lazada_result))
         keep_sheets.update(f'라자다({cur})' for cur in lazada_currencies)
     keep_sheets.update(_ebay_sheet_names_for_results(ebay_results))
     keep_sheets.update(f'환율({cur})' for cur in used_currencies)

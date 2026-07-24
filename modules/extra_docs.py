@@ -95,6 +95,26 @@ def other_zero_rate_count_value(value=None):
     return 1
 
 
+def lazada_item_date(item, result=None):
+    item = item or {}
+    result = result or {}
+    return (item.get("date") or item.get("delivered_date")
+            or result.get("write_date") or result.get("period_end") or "")
+
+
+def lazada_item_rate(item, currency, rates, result=None):
+    item = item or {}
+    result = result or {}
+    source_kind = item.get("source_kind") or result.get("source_kind")
+    item_date = item.get("date") or item.get("delivered_date")
+    if source_kind == "order_excel" or item_date:
+        return applied_rate_value(currency, get_rate_for_date(rates.get(currency), item_date))
+    return applied_rate_value(
+        currency,
+        avg_rate_for_period(rates.get(currency), result.get("period_start", ""), result.get("period_end", "")),
+    )
+
+
 def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None):
     for sd in shopee_results or []:
         sub = sd.get("submitter") or {}
@@ -143,20 +163,19 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
             })
 
     if lazada_result:
-        ps = lazada_result.get("period_start", "")
-        pe = lazada_result.get("period_end", "")
-        wd = lazada_result.get("write_date", "") or pe
-        ship_date = date_to_int(wd)
         for it in lazada_result.get("items", []):
             cur = it.get("currency", "")
+            if not cur:
+                continue
             div = RATE_DIVISOR.get(cur, 1)
-            rate = applied_rate_value(cur, avg_rate_for_period(rates.get(cur), ps, pe))
+            rate = lazada_item_rate(it, cur, rates, lazada_result)
             amount = float(it.get("amount", 0) or 0)
             krw = round(amount * rate / div)
             tracking = it.get("tracking_no", "")
+            ship_date = date_to_int(lazada_item_date(it, lazada_result))
             rows.append({
                 "platform": "라자다",
-                "issuer": it.get("carrier") or lazada_result.get("carrier") or "용성종합물류",
+                "issuer": it.get("carrier") or lazada_result.get("carrier") or "라자다",
                 "tracking_no": tracking,
                 "export_no": "",
                 "other_count": 1,
