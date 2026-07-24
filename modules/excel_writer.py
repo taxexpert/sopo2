@@ -38,8 +38,9 @@ RATE_DIVISOR = {}
 
 # 제출자(판매자) 정보 기본값 — PDF에서 못 읽었을 때만 사용
 DEFAULT_SUBMITTER = {
-    'name': '유엠(UM)', 'biz_no': '529-12-02268',
-    'ceo': '맹진열', 'address': '서울특별시 광진구 광나루로 556, 1동 2층',
+    # 제출자 정보를 읽지 못한 경우 특정 업체 정보 대신 중립적인 기본 문구를 사용합니다.
+    'name': '사업자명(사업자번호)', 'biz_no': '',
+    'ceo': '', 'address': '',
 }
 
 # 숫자 천단위 콤마 서식
@@ -62,6 +63,14 @@ def other_zero_rate_count_value(value=None):
 def _date_to_int(value):
     d = re.sub(r"\D", "", str(value or ""))[:8]
     return int(d) if len(d) == 8 else None
+
+
+def _submitter_label(submitter: dict = None) -> str:
+    """상호와 사업자번호를 중복 괄호 없이 표시합니다."""
+    sub = submitter or {}
+    name = str(sub.get('name') or '사업자명(사업자번호)').strip()
+    biz_no = str(sub.get('biz_no') or '').strip()
+    return f"{name}({biz_no})" if biz_no else name
 
 
 def _applied_rate_format(currency: str) -> str:
@@ -1037,7 +1046,7 @@ def write_summary_sheet(ws, shopee_totals: dict, lazada_totals: dict,
     ws.column_dimensions['D'].width = 16
 
     sub = submitter or DEFAULT_SUBMITTER
-    ws['B1'] = f"{sub.get('name','')}({sub.get('biz_no','')})"
+    ws['B1'] = _submitter_label(sub)
     _style(ws['B1'], font=FONT_TITLE)
     ws['D2'] = year_month
     _style(ws['D2'], font=FONT_BOLD)
@@ -1338,7 +1347,7 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
         ws.column_dimensions[col].width = width
 
     sub = submitter or DEFAULT_SUBMITTER
-    ws['A1'] = f"월별집계 - {sub.get('name','')}({sub.get('biz_no','')})"
+    ws['A1'] = f"월별집계 - {_submitter_label(sub)}"
     _style(ws['A1'], font=FONT_TITLE)
     ws.merge_cells('A1:F1')
 

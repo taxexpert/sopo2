@@ -45,7 +45,7 @@ RIGHT = Alignment(horizontal="right", vertical="center")
 
 
 def safe_filename(value: str) -> str:
-    value = str(value or "회사이름").strip() or "회사이름"
+    value = str(value or "사업자명(사업자번호)").strip() or "사업자명(사업자번호)"
     for ch in '\\/:*?"<>|':
         value = value.replace(ch, "_")
     return value
@@ -132,7 +132,7 @@ def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None
         sub = qoo10_result.get("submitter") or {}
         if sub.get("name"):
             return sub.get("name")
-    return "회사이름"
+    return "사업자명(사업자번호)"
 
 
 def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, ebay_results=None):
