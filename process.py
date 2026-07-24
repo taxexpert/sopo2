@@ -21,6 +21,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 from modules.pdf_parser    import parse_pdf, detect_pdf_type
+from modules.lazada_order_parser import parse_lazada_order_excel, merge_lazada_results
 from modules.exchange_rate import fetch_all_currencies
 from modules.excel_writer  import generate_excel
 
@@ -42,12 +43,13 @@ def load_config() -> dict:
     return {}
 
 
-# ── PDF 파일 수집 ───────────────────────────────────────────────
+# ── 입력 파일 수집 ──────────────────────────────────────────────
 
-def collect_pdfs(input_dir: Path) -> list:
-    pdfs = list(input_dir.glob('*.pdf')) + list(input_dir.glob('*.PDF'))
-    # 이미 처리된 폴더 제외
-    return [p for p in pdfs if 'processed' not in str(p)]
+def collect_inputs(input_dir: Path) -> list:
+    files = []
+    for pattern in ('*.pdf', '*.PDF', '*.xlsx', '*.xlsm'):
+        files.extend(input_dir.glob(pattern))
+    return [p for p in files if 'processed' not in str(p)]
 
 
 # ── 연월 추정 (파일명에서) ────────────────────────────────────────
@@ -75,13 +77,13 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
 
     # PDF 파일 목록
     if pdf_paths is None:
-        pdf_paths = collect_pdfs(INPUT_DIR)
+        pdf_paths = collect_inputs(INPUT_DIR)
 
     if not pdf_paths:
-        print('  ⚠️  처리할 PDF 파일이 없습니다. input/ 폴더에 소포수령증 PDF를 넣어주세요.')
+        print('  ⚠️  처리할 파일이 없습니다. input/ 폴더에 PDF 또는 라자다 Excel을 넣어주세요.')
         return
 
-    print(f'\n📄 처리할 PDF: {len(pdf_paths)}개')
+    print(f'\n📄 처리할 파일: {len(pdf_paths)}개')
     for p in pdf_paths:
         print(f'   - {p.name}')
 
@@ -93,13 +95,18 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
         print(f'\n📅 처리 연월: {year}년 {month:02d}월')
 
     # ── PDF 파싱 ──────────────────────────────────────────
-    print(f'\n[1/4] PDF 파싱 중...')
+    print(f'\n[1/4] PDF / Excel 파싱 중...')
     shopee_results = []
-    lazada_result  = None
-    qoo10_result   = None
+    lazada_results = []
+    qoo10_result = None
 
-    for pdf_path in pdf_paths:
-        result = parse_pdf(str(pdf_path))
+    for input_path in pdf_paths:
+        if input_path.suffix.lower() in {'.xlsx', '.xlsm'}:
+            result = parse_lazada_order_excel(input_path)
+            lazada_results.append(result)
+            print(f'     라자다 주문 Excel — {len(result.get("items", []))}건')
+            continue
+        result = parse_pdf(str(input_path))
         if result is None:
             continue
         ptype = result.get('type')
@@ -109,14 +116,18 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
                   f'{result.get("total_qty",0)}건 / '
                   f'{result.get("total_amount",0):,.2f} {result.get("currency","")}')
         elif ptype == 'lazada':
-            lazada_result = result
-            print(f'     라자다 — {len(result.get("items",[]))}개 국가')
+            result.setdefault('source_kind', 'receipt_pdf')
+            result.setdefault('source_files', [input_path.name])
+            lazada_results.append(result)
+            print(f'     라자다 PDF — {len(result.get("items",[]))}건')
         elif ptype == 'qoo10':
             qoo10_result = result
             if qoo10_result:
                 print(f'     큐텐 JPY — {qoo10_result.get("qty",0)}건 / {qoo10_result.get("amount",0):,} JPY')
             else:
                 print('     큐텐 — 이미지 PDF, 수동 입력 필요')
+
+    lazada_result = merge_lazada_results(lazada_results)
 
     # 큐텐 수동 입력 반영 (config.yaml)
     qoo10_manual = config.get('qoo10', {})
@@ -194,7 +205,7 @@ def _build_manual_rates(manual_rates: dict, year: int, month: int) -> dict:
         'MYR': '말레이시아 링깃 (MYR)', 'PHP': '필리핀 페소 (PHP)',
         'SGD': '싱가포르 달러 (SGD)', 'THB': '태국 바트 (THB)',
         'TWD': '대만 달러 (TWD)', 'VND': '베트남 동 (VND)',
-        'JPY': '일본 엔 (JPY) (100)', 'BRL': '브라질 헤알 (BRL)',
+        'IDR': '인도네시아 루피아 (IDR)', 'JPY': '일본 엔 (JPY)', 'BRL': '브라질 헤알 (BRL)',
     }
 
     result = {}
@@ -221,7 +232,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='소포수령증 자동 처리')
     parser.add_argument('--year',  type=int, help='처리 연도 (예: 2025)')
     parser.add_argument('--month', type=int, help='처리 월 (예: 12)')
-    parser.add_argument('--pdf',   type=str, help='특정 PDF 파일 경로 (복수 지정 시 쉼표 구분)')
+    parser.add_argument('--pdf', type=str, help='특정 PDF/Excel 파일 경로 (복수 지정 시 쉼표 구분)')
     args = parser.parse_args()
 
     pdf_paths = None

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-소포수령증 자동화 웹앱 — v48 큐텐 월평균환율 적용
+소포수령증 자동화 웹앱 — v52 라자다 주문내역 Excel 지원
 실행: streamlit run app.py
 """
 
@@ -24,6 +24,9 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from modules.pdf_parser import parse_pdf, detect_pdf_type
+from modules.lazada_order_parser import (
+    is_lazada_order_excel, parse_lazada_order_excel, merge_lazada_results,
+)
 from modules.excel_writer import generate_excel, period_labels
 from modules.exchange_rate import (
     fetch_all_currencies_for_period,
@@ -135,11 +138,11 @@ UNKNOWN_PDF_TYPE_TO_CODE = {
 }
 
 # ══════════════════════════════════════════════════════════════════
-# STEP 1 — PDF 업로드
+# STEP 1 — PDF / Excel 업로드
 # ══════════════════════════════════════════════════════════════════
-st.markdown("### 📄 STEP 1 — 소포수령증 PDF 업로드")
+st.markdown("### 📄 STEP 1 — 소포수령증 PDF / 라자다 Excel 업로드")
 c_desc, c_reset = st.columns([6, 1])
-c_desc.caption("쇼피, 라자다, 큐텐재팬 PDF를 한꺼번에 올려주세요.")
+c_desc.caption("쇼피, 라자다, 큐텐재팬 PDF와 라자다 주문내역 Excel을 한꺼번에 올려주세요.")
 if c_reset.button("🔄 초기화"):
     st.session_state.uploader_key += 1
     st.session_state.qoo10_entries = []
@@ -148,19 +151,22 @@ if c_reset.button("🔄 초기화"):
     st.rerun()
 
 uploaded_files = st.file_uploader(
-    "PDF 파일 선택",
-    type=["pdf"],
+    "PDF 또는 Excel 파일 선택",
+    type=["pdf", "xlsx", "xlsm"],
     accept_multiple_files=True,
     label_visibility="collapsed",
-    key=f"pdf_uploader_{st.session_state.uploader_key}",
+    key=f"file_uploader_{st.session_state.uploader_key}",
 )
 
 @st.cache_data(show_spinner=False)
-def _detect_uploaded_pdf_type(filename: str, payload: bytes) -> str:
-    """파일명이 일반적이어도 PDF 본문 표식으로 플랫폼을 자동 판별합니다."""
+def _detect_uploaded_file_type(filename: str, payload: bytes) -> str:
+    """PDF는 본문 표식, Excel은 필수 열로 플랫폼을 자동 판별합니다."""
+    suffix = Path(filename).suffix.lower()
     with tempfile.TemporaryDirectory() as td:
-        path = Path(td) / (Path(filename).name or "uploaded.pdf")
+        path = Path(td) / (Path(filename).name or f"uploaded{suffix}")
         path.write_bytes(payload)
+        if suffix in {".xlsx", ".xlsm"}:
+            return "lazada_excel" if is_lazada_order_excel(path) else "unknown_excel"
         return detect_pdf_type(str(path))
 
 
@@ -177,9 +183,9 @@ if uploaded_files:
     cols = st.columns(2)
     for i, f in enumerate(uploaded_files):
         payload = f.getvalue()
-        ptype = _detect_uploaded_pdf_type(f.name, payload)
-        icon = {"shopee": "🛍️", "lazada": "🟠", "qoo10": "🇯🇵", "ebay": "🛒", "unknown": "❓"}.get(ptype, "📄")
-        label = {"shopee": "쇼피", "lazada": "라자다", "qoo10": "큐텐재팬", "ebay": "이베이", "unknown": "미확인"}.get(ptype, "")
+        ptype = _detect_uploaded_file_type(f.name, payload)
+        icon = {"shopee": "🛍️", "lazada": "🟠", "lazada_excel": "🟠", "qoo10": "🇯🇵", "ebay": "🛒", "unknown": "❓", "unknown_excel": "❓"}.get(ptype, "📄")
+        label = {"shopee": "쇼피", "lazada": "라자다", "lazada_excel": "라자다 주문내역", "qoo10": "큐텐재팬", "ebay": "이베이", "unknown": "미확인", "unknown_excel": "미확인 Excel"}.get(ptype, "")
         target_col = cols[i % 2]
         target_col.markdown(f"{icon} `{f.name}` — {label}")
         if ptype == "unknown":
@@ -190,6 +196,9 @@ if uploaded_files:
                 label_visibility="collapsed",
             )
             uploaded_type_choices[f.name] = UNKNOWN_PDF_TYPE_TO_CODE[selected_label]
+        elif ptype == "unknown_excel":
+            target_col.error("라자다 주문내역 Excel 형식이 아닙니다. deliveredDate와 paidPrice 열을 확인해 주세요.")
+            uploaded_type_choices[f.name] = ptype
         else:
             uploaded_type_choices[f.name] = ptype
 
@@ -337,7 +346,7 @@ process_btn = st.button(
     disabled=not has_process_input,
 )
 if not has_process_input:
-    st.caption("PDF를 업로드하거나 큐텐재팬 정보를 입력하면 생성 버튼이 활성화됩니다.")
+    st.caption("PDF/라자다 Excel을 업로드하거나 큐텐재팬 정보를 입력하면 생성 버튼이 활성화됩니다.")
 
 progress_bar = st.empty()
 status_text = st.empty()
@@ -495,28 +504,42 @@ if process_btn:
 
     st.session_state.result_files = []
     progress_bar.progress(3, text="처리 준비 중...")
-    status_text.info("PDF 파싱, 환율 수집, 엑셀 생성 중입니다...")
+    status_text.info("파일 분석, 환율 수집, 엑셀 생성 중입니다...")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
-        pdf_paths = []
+        input_paths = []
         for uf in (uploaded_files or []):
             p = tmpdir / uf.name
             p.write_bytes(uf.getbuffer())
-            pdf_paths.append(p)
+            input_paths.append(p)
 
         try:
-            # PDF 파싱
+            # PDF / 라자다 주문내역 Excel 파싱
             t_pdf = time.perf_counter()
-            progress_bar.progress(15, text="📄 PDF 분석 중...")
-            log("📄 PDF 분석 중...")
+            progress_bar.progress(15, text="📄 파일 분석 중...")
+            log("📄 파일 분석 중...")
             shopee_results = []
-            lazada_result = None
+            lazada_results = []
             ebay_results = []
-            for p in pdf_paths:
-                selected_type = uploaded_type_choices.get(p.name, detect_pdf_type(p.name))
-                forced_type = selected_type if detect_pdf_type(p.name) == "unknown" else None
-                detected_type = forced_type or detect_pdf_type(p.name)
+            for p in input_paths:
+                suffix = p.suffix.lower()
+                selected_type = uploaded_type_choices.get(p.name, "")
+
+                if suffix in {".xlsx", ".xlsm"}:
+                    if selected_type != "lazada_excel":
+                        log(f"[WARN] 지원하지 않는 Excel 형식: {p.name}")
+                        continue
+                    result = parse_lazada_order_excel(p)
+                    lazada_results.append(result)
+                    totals = result.get("total_amount_by_currency", {})
+                    total_text = ", ".join(f"{amount:,.2f} {cur}" for cur, amount in totals.items())
+                    log(f"[OK] 라자다 주문엑셀: {p.name} / {len(result.get('items', [])):,}건 / {total_text}")
+                    continue
+
+                detected_from_file = detect_pdf_type(str(p))
+                forced_type = selected_type if detected_from_file == "unknown" else None
+                detected_type = forced_type or detected_from_file
                 # 큐텐 PDF는 업로드 단계에서 파싱되어 STEP 2 목록에 자동 반영됩니다.
                 if detected_type == "qoo10":
                     matched = [e for e in st.session_state.qoo10_entries if e.get("_source_file") == p.name]
@@ -536,19 +559,22 @@ if process_btn:
                     shopee_results.append(result)
                     log(f"[OK] 쇼피 {result.get('currency','?')}: {p.name} / {result.get('total_qty',0):,}건")
                 elif result.get("type") == "lazada":
-                    lazada_result = result
-                    log(f"[OK] 라자다: {p.name} / {len(result.get('items', [])):,}건")
+                    result.setdefault("source_files", [p.name])
+                    result.setdefault("source_kind", "receipt_pdf")
+                    lazada_results.append(result)
+                    log(f"[OK] 라자다 PDF: {p.name} / {len(result.get('items', [])):,}건")
                 elif result.get("type") == "ebay":
                     ebay_results.append(result)
                     log(f"[OK] 이베이: {p.name} / {len(result.get('items', [])):,}건")
 
+            lazada_result = merge_lazada_results(lazada_results)
             qoo10_result = _build_qoo10_result()
             if qoo10_result:
                 log(f"[OK] 큐텐 STEP 2: {len(qoo10_result.get('entries', [])):,}건 / {int(qoo10_result.get('amount',0)):,} JPY")
 
             if not shopee_results and not lazada_result and not qoo10_result and not ebay_results:
                 raise RuntimeError("처리할 데이터가 없습니다. PDF 또는 큐텐 수동 입력을 확인해 주세요.")
-            log(f"✅ PDF 분석 완료 ({time.perf_counter() - t_pdf:.1f}초)")
+            log(f"✅ 파일 분석 완료 ({time.perf_counter() - t_pdf:.1f}초)")
 
             # 환율 수집
             daily_needed = _needed_currencies(shopee_results, lazada_result, qoo10_result)
@@ -676,7 +702,8 @@ with st.expander("📌 파일명 규칙 안내"):
 | `유엠(UM)_TH_*.pdf` | 쇼피 태국 |
 | `유엠(UM)_TW_*.pdf` | 쇼피 대만 |
 | `유엠(UM)_VN_*.pdf` | 쇼피 베트남 |
-| `라자다_*.pdf` | 라자다 |
+| `라자다_*.pdf` | 라자다 소포수령증 |
+| `라자다_*.xlsx` | 라자다 주문내역 (`paidPrice`/`deliveredDate`) |
 | `큐텐재팬_*.pdf` | 큐텐재팬 — PDF 자동인식 후 STEP 2에 반영 |
 
 참고: 쇼피는 업체명과 무관하게 `_MY_`, `_PH_`, `_SG_`, `_TH_`, `_TW_`, `_VN_`, `_BR_`, `_MX_` 국가코드 패턴도 함께 인식합니다.
