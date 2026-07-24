@@ -13,6 +13,8 @@ from openpyxl.worksheet.cell_range import CellRange
 from typing import Optional
 import re
 from pathlib import Path
+from io import BytesIO
+from copy import copy
 
 
 # ── 스타일 정의 ────────────────────────────────────────────────
@@ -678,39 +680,121 @@ def write_currency_template_sheet(ws, currency: str,
 
 # ── 라자다 소포수령증 / 주문내역 시트 ────────────────────────────
 
+def _copy_lazada_source_workbooks(ws, source_workbooks: list) -> bool:
+    """라자다 국가별 원본 Excel 시트를 한 시트에 양식 그대로 세로로 이어 붙입니다.
+
+    첫 번째 파일은 1행부터, 다음 파일은 한 줄을 비운 뒤 바로 아래에 붙입니다.
+    셀 값·수식·서식·병합·행높이·열너비·숨김 상태를 가능한 범위에서 유지합니다.
+    """
+    valid_sources = [src for src in (source_workbooks or []) if src.get('content')]
+    if not valid_sources:
+        return False
+
+    next_start_row = 1
+    first_sheet = True
+    for src_info in valid_sources:
+        raw = src_info.get('content')
+        if not isinstance(raw, (bytes, bytearray)):
+            continue
+        try:
+            src_wb = openpyxl.load_workbook(BytesIO(raw), data_only=False)
+        except Exception:
+            continue
+
+        requested = src_info.get('sheet_name')
+        src_ws = src_wb[requested] if requested in src_wb.sheetnames else src_wb.worksheets[0]
+        if not first_sheet:
+            next_start_row += 1  # 원본 파일 블록 사이 빈 행
+        row_offset = next_start_row - 1
+
+        # 열 너비와 숨김 상태. 파일마다 차이가 있으면 더 넓은 값을 유지합니다.
+        for col_idx in range(1, src_ws.max_column + 1):
+            letter = get_column_letter(col_idx)
+            src_dim = src_ws.column_dimensions[letter]
+            dst_dim = ws.column_dimensions[letter]
+            if src_dim.width is not None:
+                dst_dim.width = max(dst_dim.width or 0, src_dim.width)
+            if src_dim.hidden:
+                dst_dim.hidden = True
+            if src_dim.bestFit:
+                dst_dim.bestFit = True
+            if src_dim.outlineLevel:
+                dst_dim.outlineLevel = src_dim.outlineLevel
+
+        # 셀 값/수식과 개별 셀 서식을 복사합니다.
+        for src_row in range(1, src_ws.max_row + 1):
+            dst_row = row_offset + src_row
+            src_row_dim = src_ws.row_dimensions[src_row]
+            dst_row_dim = ws.row_dimensions[dst_row]
+            if src_row_dim.height is not None:
+                dst_row_dim.height = src_row_dim.height
+            dst_row_dim.hidden = src_row_dim.hidden
+            dst_row_dim.outlineLevel = src_row_dim.outlineLevel
+            dst_row_dim.collapsed = src_row_dim.collapsed
+
+            for col_idx in range(1, src_ws.max_column + 1):
+                src_cell = src_ws.cell(src_row, col_idx)
+                dst_cell = ws.cell(dst_row, col_idx, value=src_cell.value)
+                if src_cell.has_style:
+                    dst_cell._style = copy(src_cell._style)
+                if src_cell.number_format:
+                    dst_cell.number_format = src_cell.number_format
+                if src_cell.alignment:
+                    dst_cell.alignment = copy(src_cell.alignment)
+                if src_cell.protection:
+                    dst_cell.protection = copy(src_cell.protection)
+                if src_cell.comment is not None:
+                    dst_cell.comment = copy(src_cell.comment)
+                if src_cell.hyperlink:
+                    dst_cell._hyperlink = copy(src_cell.hyperlink)
+
+        # 병합은 셀 복사 후에 행 오프셋을 적용하여 복원합니다.
+        for merged in src_ws.merged_cells.ranges:
+            ws.merge_cells(
+                start_row=merged.min_row + row_offset,
+                start_column=merged.min_col,
+                end_row=merged.max_row + row_offset,
+                end_column=merged.max_col,
+            )
+
+        if first_sheet:
+            ws.freeze_panes = src_ws.freeze_panes
+            ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+            if src_ws.sheet_format.defaultRowHeight is not None:
+                ws.sheet_format.defaultRowHeight = src_ws.sheet_format.defaultRowHeight
+            if src_ws.sheet_format.defaultColWidth is not None:
+                ws.sheet_format.defaultColWidth = src_ws.sheet_format.defaultColWidth
+
+        next_start_row = row_offset + src_ws.max_row + 1
+        first_sheet = False
+
+    return not first_sheet
+
+
 def write_lazada_order_sheet(ws, lazada_data: dict, rates: dict):
-    """라자다 Seller Center 주문내역 Excel의 paidPrice/deliveredDate 상세."""
+    """라자다 국가별 주문내역 Excel 원본을 양식 그대로 아래로 이어 붙입니다."""
+    if _copy_lazada_source_workbooks(ws, lazada_data.get('source_workbooks', [])):
+        return
+
+    # 구버전 파싱 결과처럼 원본 파일 바이트가 없을 때만 기존 집계형 표를 사용합니다.
     widths = {
         'A': 13, 'B': 10, 'C': 18, 'D': 20, 'E': 22, 'F': 18,
-        'G': 10, 'H': 16, 'I': 12, 'J': 16, 'K': 24,
+        'G': 10, 'H': 16, 'I': 12, 'J': 16,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
     ws['A1'] = '라자다 주문내역 집계'
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
-    ws.merge_cells('A1:K1')
-    ws['A2'] = '거래기간'
-    ws['B2'] = f"{lazada_data.get('period_start','')} ~ {lazada_data.get('period_end','')}"
-    ws['D2'] = '매출 기준'
-    ws['E2'] = 'paidPrice'
-    ws['G2'] = '날짜 기준'
-    ws['H2'] = 'deliveredDate'
-    ws['A3'] = '원본 파일'
-    ws['B3'] = ', '.join(lazada_data.get('source_files', []) or [])
-
+    ws.merge_cells('A1:J1')
     headers = ['배송완료일', '도착국', '주문번호', '주문상품번호', '송장번호', '배송사',
-               '통화', 'Paid Price', '적용환율', '원화금액', '원본파일']
+               '통화', 'Paid Price', '적용환율', '원화금액']
     for col, h in enumerate(headers, 1):
-        c = ws.cell(row=5, column=col, value=h)
+        c = ws.cell(row=3, column=col, value=h)
         _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
 
-    r = 6
-    totals = {}
-    items = sorted(lazada_data.get('items', []), key=lambda it: (
-        it.get('date') or '', it.get('currency') or '', it.get('tracking_no') or ''
-    ))
-    for it in items:
+    for idx, it in enumerate(sorted(lazada_data.get('items', []), key=lambda item: (
+            item.get('date') or '', item.get('currency') or '', item.get('tracking_no') or '')), 1):
         cur = it.get('currency', '')
         amount = float(it.get('amount', 0) or 0)
         rate = _lazada_item_rate(it, cur, rates, lazada_result=lazada_data)
@@ -718,32 +802,14 @@ def write_lazada_order_sheet(ws, lazada_data: dict, rates: dict):
         vals = [
             _lazada_item_date(it, lazada_data), it.get('destination', ''), it.get('order_number', ''),
             it.get('order_item_id', ''), it.get('tracking_no', ''), it.get('carrier', ''),
-            cur, amount, rate, krw, it.get('source_file', ''),
+            cur, amount, rate, krw,
         ]
+        row = idx + 3
         for col, value in enumerate(vals, 1):
-            c = ws.cell(row=r, column=col, value=value)
+            c = ws.cell(row=row, column=col, value=value)
             nf = {8: NUM_FMT2, 9: _applied_rate_format(cur), 10: NUM_FMT}.get(col)
             _style(c, font=FONT_DEFAULT, align=RIGHT if col in (8, 9, 10) else CENTER,
                    border=THIN_BORDER, num_format=nf)
-        bucket = totals.setdefault(cur, {'fx': 0.0, 'krw': 0, 'qty': 0})
-        bucket['fx'] += amount
-        bucket['krw'] += krw
-        bucket['qty'] += int(it.get('qty', 1) or 1)
-        r += 1
-
-    r += 1
-    for cur in _ordered_currencies(totals.keys()):
-        data = totals[cur]
-        ws.cell(row=r, column=1, value=f'{cur} 합계')
-        ws.cell(row=r, column=7, value=cur)
-        ws.cell(row=r, column=8, value=data['fx'])
-        ws.cell(row=r, column=10, value=data['krw'])
-        for col in range(1, 12):
-            c = ws.cell(row=r, column=col)
-            nf = {8: NUM_FMT2, 10: NUM_FMT}.get(col)
-            _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (8, 10) else CENTER,
-                   border=THIN_BORDER, num_format=nf)
-        r += 1
 
 
 def write_lazada_receipt_sheet(ws, lazada_data: dict, rates: dict, submitter: dict = None):
@@ -820,14 +886,14 @@ def write_lazada_receipt_sheet(ws, lazada_data: dict, rates: dict, submitter: di
 
 
 def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: dict, lazada_result: dict):
-    """통화별 라자다 상세 시트. 주문 Excel은 deliveredDate 일별 환율을 사용합니다."""
-    widths = {'A': 8, 'B': 13, 'C': 18, 'D': 20, 'E': 22, 'F': 18, 'G': 16, 'H': 12, 'I': 16, 'J': 24}
+    """통화별 라자다 상세 시트. 원본파일 열 없이 deliveredDate 일별 환율을 사용합니다."""
+    widths = {'A': 8, 'B': 13, 'C': 18, 'D': 20, 'E': 22, 'F': 18, 'G': 16, 'H': 12, 'I': 16}
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
     ws['A1'] = f'라자다 {currency} 상세'
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
-    ws.merge_cells('A1:J1')
-    headers = ['No', '배송완료일', '주문번호', '주문상품번호', '송장번호', '배송사', '외화금액', '환율', '원화금액', '원본파일']
+    ws.merge_cells('A1:I1')
+    headers = ['No', '배송완료일', '주문번호', '주문상품번호', '송장번호', '배송사', '외화금액', '환율', '원화금액']
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=3, column=col, value=h)
         _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
@@ -844,7 +910,7 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
         rate = _lazada_item_rate(it, currency, rates, lazada_result, avg_rate)
         krw = round(amount * rate)
         vals = [idx, _lazada_item_date(it, lazada_result), it.get('order_number',''), it.get('order_item_id',''),
-                it.get('tracking_no',''), it.get('carrier',''), amount, rate, krw, it.get('source_file','')]
+                it.get('tracking_no',''), it.get('carrier',''), amount, rate, krw]
         row = idx + 3
         for col, value in enumerate(vals, 1):
             c = ws.cell(row=row, column=col, value=value)
@@ -857,7 +923,7 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
     ws.cell(total_row, 1, '합계')
     ws.cell(total_row, 7, total_fx)
     ws.cell(total_row, 9, total_krw)
-    for col in range(1, 11):
+    for col in range(1, 10):
         c = ws.cell(total_row, col)
         nf = {7: NUM_FMT2, 9: NUM_FMT}.get(col)
         _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (7,9) else CENTER, border=THIN_BORDER, num_format=nf)

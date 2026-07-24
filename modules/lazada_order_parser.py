@@ -184,6 +184,13 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
         "type": "lazada",
         "source_kind": "order_excel",
         "source_files": [path.name],
+        # 원본 주문내역 시트를 결과 워크북의 라자다(주문내역) 시트에
+        # 양식 그대로 이어 붙일 수 있도록 원본 파일 바이트와 대상 시트명을 보관합니다.
+        "source_workbooks": [{
+            "filename": path.name,
+            "sheet_name": selected.title,
+            "content": path.read_bytes(),
+        }],
         "carrier": carriers[0] if len(carriers) == 1 else "라자다",
         "period_start": min(dates),
         "period_end": max(dates),
@@ -209,11 +216,13 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
 
     items = []
     source_files = []
+    source_workbooks = []
     source_kinds = set()
     submitter = {}
     for result in valid:
         items.extend(result.get("items", []))
         source_files.extend(result.get("source_files", []))
+        source_workbooks.extend(result.get("source_workbooks", []))
         if result.get("source_kind"):
             source_kinds.add(result.get("source_kind"))
         sub = result.get("submitter") or {}
@@ -237,6 +246,7 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
         "type": "lazada",
         "source_kind": next(iter(source_kinds)) if len(source_kinds) == 1 else "mixed",
         "source_files": list(dict.fromkeys(source_files)),
+        "source_workbooks": source_workbooks,
         "carrier": carriers[0] if len(carriers) == 1 else "라자다",
         "period_start": min(starts) if starts else "",
         "period_end": max(ends) if ends else "",
