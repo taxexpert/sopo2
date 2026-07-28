@@ -22,7 +22,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from modules.pdf_parser    import parse_pdf, detect_pdf_type
 from modules.lazada_order_parser import parse_lazada_order_excel, merge_lazada_results
-from modules.exchange_rate import fetch_all_currencies
+from modules.shopify_parser import (
+    is_shopify_orders_file, parse_shopify_orders, merge_shopify_results,
+)
+from modules.exchange_rate import (
+    fetch_all_currencies, fetch_monthly_avg_currencies_for_period, merge_monthly_rates,
+)
 from modules.excel_writer  import generate_excel
 
 BASE_DIR    = Path(__file__).parent
@@ -31,7 +36,8 @@ OUTPUT_DIR  = BASE_DIR / 'output'
 LOGS_DIR    = BASE_DIR / 'logs'
 CONFIG_FILE = BASE_DIR / 'config.yaml'
 
-CURRENCIES = ['MYR', 'PHP', 'SGD', 'THB', 'TWD', 'VND', 'JPY']
+CURRENCIES = ['MYR', 'PHP', 'SGD', 'THB', 'TWD', 'VND', 'JPY',
+              'USD', 'EUR', 'GBP', 'CAD', 'AUD']
 
 
 # ── 설정 파일 로드 ──────────────────────────────────────────────
@@ -47,7 +53,7 @@ def load_config() -> dict:
 
 def collect_inputs(input_dir: Path) -> list:
     files = []
-    for pattern in ('*.pdf', '*.PDF', '*.xlsx', '*.xlsm'):
+    for pattern in ('*.pdf', '*.PDF', '*.xlsx', '*.xlsm', '*.csv'):
         files.extend(input_dir.glob(pattern))
     return [p for p in files if 'processed' not in str(p)]
 
@@ -65,6 +71,31 @@ def infer_year_month(pdf_paths: list) -> tuple:
     month = today.month - 1 or 12
     year  = today.year if today.month > 1 else today.year - 1
     return year, month
+
+
+# ── 월평균 환율이 필요한 통화/월 ────────────────────────────────
+
+def _monthly_rate_requests(ebay_results, qoo10_result) -> dict:
+    """이베이(린코스)는 발행월, 큐텐은 거래기간이 속한 반기말 월의 월평균 환율이 필요합니다."""
+    requests = {}
+    for er in ebay_results or []:
+        for it in er.get('items', []):
+            cur = str(it.get('currency', '')).strip().upper()
+            month = str(it.get('month', '')).strip()
+            if cur and re.fullmatch(r'20\d{2}-\d{2}', month):
+                requests.setdefault(cur, set()).add(month)
+
+    if qoo10_result:
+        for entry in (qoo10_result.get('entries') or [{}]):
+            base = (entry.get('period_end') or qoo10_result.get('period_end')
+                    or entry.get('period_start') or qoo10_result.get('period_start')
+                    or entry.get('write_date') or qoo10_result.get('write_date') or '')
+            digits = re.sub(r'\D', '', str(base))[:8]
+            if len(digits) >= 6:
+                y, m = digits[:4], int(digits[4:6])
+                requests.setdefault('JPY', set()).add(f'{y}-06' if m <= 6 else f'{y}-12')
+
+    return {cur: sorted(months) for cur, months in requests.items() if months}
 
 
 # ── 메인 처리 ───────────────────────────────────────────────────
@@ -98,10 +129,22 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
     print(f'\n[1/4] PDF / Excel 파싱 중...')
     shopee_results = []
     lazada_results = []
+    ebay_results = []
+    joom_results = []
+    shopify_results = []
     qoo10_result = None
 
     for input_path in pdf_paths:
-        if input_path.suffix.lower() in {'.xlsx', '.xlsm'}:
+        if input_path.suffix.lower() in {'.xlsx', '.xlsm', '.csv'}:
+            if is_shopify_orders_file(input_path):
+                result = parse_shopify_orders(input_path)
+                shopify_results.append(result)
+                print(f'     쇼피파이 {result.get("store","")} — {result.get("row_count", 0)}건 '
+                      f'/ {result.get("total_by_currency", {})}')
+                continue
+            if input_path.suffix.lower() == '.csv':
+                print(f'     ⚠️  인식할 수 없는 CSV — {input_path.name}')
+                continue
             result = parse_lazada_order_excel(input_path)
             lazada_results.append(result)
             print(f'     라자다 주문 Excel — {len(result.get("items", []))}건')
@@ -120,6 +163,12 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
             result.setdefault('source_files', [input_path.name])
             lazada_results.append(result)
             print(f'     라자다 PDF — {len(result.get("items",[]))}건')
+        elif ptype == 'ebay':
+            ebay_results.append(result)
+            print(f'     이베이/린코스 — {len(result.get("items", []))}건')
+        elif ptype == 'joom':
+            joom_results.append(result)
+            print(f'     Joom — {len(result.get("items", []))}건 / {result.get("total_by_currency", {})}')
         elif ptype == 'qoo10':
             qoo10_result = result
             if qoo10_result:
@@ -128,6 +177,7 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
                 print('     큐텐 — 이미지 PDF, 수동 입력 필요')
 
     lazada_result = merge_lazada_results(lazada_results)
+    shopify_results = merge_shopify_results(shopify_results)
 
     # 큐텐 수동 입력 반영 (config.yaml)
     qoo10_manual = config.get('qoo10', {})
@@ -163,6 +213,16 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
                 rates[cur] = _build_manual_rates(manual_rates, year, month).get(cur)
                 print(f'  📋 {cur} — 수동 환율 사용')
 
+        # 이베이(린코스)·큐텐은 공식 월평균 매매기준율이 필요합니다.
+        monthly_requests = _monthly_rate_requests(ebay_results, qoo10_result)
+        if monthly_requests:
+            monthly_rates = {}
+            for cur, months in monthly_requests.items():
+                monthly_rates[cur] = fetch_monthly_avg_currencies_for_period(
+                    months[0], months[-1], [cur]
+                )[cur]
+            rates = merge_monthly_rates(rates, monthly_rates)
+
     # ── 엑셀 생성 ──────────────────────────────────────────
     print(f'\n[3/4] 엑셀 생성 중...')
     output_filename = f'매출집계_{year}{month:02d}.xlsx'
@@ -174,6 +234,9 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
         qoo10_result=qoo10_result,
         rates=rates,
         output_path=str(output_path),
+        ebay_results=ebay_results,
+        joom_results=joom_results,
+        shopify_results=shopify_results,
         year=year,
         month=month,
     )

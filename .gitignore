@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+# 실행 중 생성되는 환율 캐시 / 입출력 폴더
+data/
+input/
+output/
+logs/
+
+# 로컬 설정
+.streamlit/secrets.toml
+config.yaml
+
+# 엑셀 임시 파일
+~$*.xlsx
+~$*.xlsm

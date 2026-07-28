@@ -3,6 +3,8 @@
 - 쇼피(Shopee): 두라로지스틱스, 텍스트 기반 PDF
 - 라자다(Lazada): 용성종합물류, 텍스트 기반 PDF (요약)
 - 큐텐(Qoo10): 국제로지스틱, 표/텍스트 우선 + OCR 보완 자동 추출
+- 린코스(이베이 등): 린코스(주), 발행월별 다통화 내역
+- Joom: 에이치3네트웍스(H3 NETWORKS), 건별 발송날짜 + USD 내역
 """
 
 import pdfplumber
@@ -48,6 +50,11 @@ def _detect_pdf_type_from_text(text: str) -> str:
     raw = str(text or "")
     compact = re.sub(r"\s+", "", raw).lower()
 
+    # Joom/에이치3네트웍스 양식: '상품 수령 및 운송 확인증' 제목과 H3 표식이 핵심입니다.
+    if ("상품수령및운송확인증" in compact or "h3networks" in compact
+            or "에이치3네트웍스" in compact or "h3네트웍스" in compact):
+        return "joom"
+
     # 큐텐/국제로지스틱 양식: 판매처 Qoo10 + JPY 금액표가 핵심 표식입니다.
     if ("qoo10" in compact and "국제로지스틱" in compact) or (
         "금액(jpy)" in compact and "국제로지스틱" in compact
@@ -85,7 +92,7 @@ def _extract_pdf_text_for_detection(pdf_path: str, max_pages: int = 2) -> str:
 
 
 def detect_pdf_type(pdf_path: str) -> str:
-    """파일명과 PDF 본문으로 종류 판단 -> shopee/lazada/qoo10/ebay/unknown."""
+    """파일명과 PDF 본문으로 종류 판단 -> shopee/lazada/qoo10/ebay/joom/unknown."""
     name = Path(str(pdf_path)).name
     lower = name.lower()
     if "라자다" in name or "lazada" in lower:
@@ -94,6 +101,8 @@ def detect_pdf_type(pdf_path: str) -> str:
         return "qoo10"
     if "이베이" in name or "ebay" in lower or "린코스" in name or "lincos" in lower:
         return "ebay"
+    if "joom" in lower or "조옴" in name or "에이치3" in name or "h3네트웍스" in name:
+        return "joom"
     # 쇼피: 업체명과 무관하게 파일명의 국가코드 패턴(_MY_, _TW_ 등)으로 인식
     if re.search(r"_(MY|PH|SG|TH|TW|VN|BR|MX|JP)_", name):
         return "shopee"
@@ -561,6 +570,206 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
     }
 
 # ─────────────────────────────────────────────────────────────────
+# Joom / 에이치3네트웍스(H3 NETWORKS) PDF 파싱
+# ─────────────────────────────────────────────────────────────────
+
+JOOM_CARRIER = '에이치3네트웍스'
+
+
+def _clean_cell(value) -> str:
+    """표 셀에서 줄바꿈과 영문 병기 괄호를 제거하고 라벨 텍스트만 남깁니다."""
+    text = str(value or '').replace('\n', ' ').strip()
+    return re.sub(r'\s+', ' ', text)
+
+
+def _label_key(value) -> str:
+    """'사업자등록번호 (Business License No.)' → '사업자등록번호'"""
+    text = _clean_cell(value)
+    text = re.sub(r'\(.*?\)', '', text)
+    return re.sub(r'\s+', '', text)
+
+
+def _joom_submitter_from_table(table, submitter: dict) -> tuple:
+    """1. 제출업체 정보 표에서 인적사항·조회기간·작성일자를 읽습니다."""
+    period_start = period_end = write_date = ''
+    label_map = {
+        '사업자등록번호': 'biz_no',
+        '법인명': 'name',
+        '상호': 'name',
+        '대표자성명': 'ceo',
+        '성명': 'ceo',
+        '법인주소': 'address',
+        '사업장소재지': 'address',
+    }
+    for row in table:
+        cells = [(_clean_cell(c) if c is not None else '') for c in row]
+        for i, cell in enumerate(cells):
+            key = _label_key(cell)
+            if not key or i + 1 >= len(cells):
+                continue
+            value = cells[i + 1]
+            if not value:
+                continue
+            if key in label_map:
+                submitter.setdefault(label_map[key], '')
+                if not submitter.get(label_map[key]):
+                    submitter[label_map[key]] = value
+            elif key in ('조회기간', '거래기간'):
+                parts = re.split(r'~|–|―', value)
+                if len(parts) >= 2:
+                    period_start = _normalize_korean_date(parts[0])
+                    period_end = _normalize_korean_date(parts[1])
+            elif key == '작성일자':
+                write_date = _normalize_korean_date(value)
+    return period_start, period_end, write_date
+
+
+def _joom_detail_header_index(table) -> Optional[int]:
+    """'발송날짜'와 '금액'이 함께 있는 헤더 행 번호를 찾습니다."""
+    for idx, row in enumerate(table):
+        keys = [_label_key(c) for c in row]
+        joined = ' '.join(keys)
+        if '발송날짜' in joined and any(k.startswith('금액') for k in keys):
+            return idx
+    return None
+
+
+def parse_joom_pdf(pdf_path: str) -> dict:
+    """
+    Joom [상품 수령 및 운송 확인증] 파싱.
+
+    이 양식은 발송 건별로 발송날짜와 금액(USD)이 있으므로 각 행의
+    발송날짜 기준 일별 매매기준율을 적용합니다.
+    """
+    submitter = {'name': '', 'biz_no': '', 'ceo': '', 'address': ''}
+    carrier = JOOM_CARRIER
+    period_start = period_end = write_date = ''
+    items = []
+    declared_total = {}
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables() or []:
+                if not table:
+                    continue
+                table_text = ' '.join(_clean_cell(c) for row in table for c in row)
+
+                # 1. 제출업체 정보
+                if '사업자등록번호' in table_text and ('조회기간' in table_text or '작성일자' in table_text):
+                    ps, pe, wd = _joom_submitter_from_table(table, submitter)
+                    period_start = period_start or ps
+                    period_end = period_end or pe
+                    write_date = write_date or wd
+                    continue
+
+                # 하단 배송업체 정보 표(상호=에이치3네트웍스)는 집계에 쓰지 않습니다.
+                if '위조' in table_text or '업태' in table_text:
+                    continue
+
+                # 2. 해외배송 내역서
+                header_idx = _joom_detail_header_index(table)
+                if header_idx is None:
+                    continue
+
+                headers = [_label_key(c) for c in table[header_idx]]
+
+                def _col(*keywords):
+                    for i, h in enumerate(headers):
+                        if any(k in h for k in keywords):
+                            return i
+                    return None
+
+                i_service = _col('서비스')
+                i_date = _col('발송날짜')
+                i_order = _col('orderid', 'OrderID', 'Order')
+                i_dest = _col('도착국가')
+                i_track = _col('접수번호', '송장')
+                i_amount = _col('금액')
+                i_name = _col('상품명')
+
+                # 헤더의 '금액(USD)' 에서 통화코드를 읽습니다.
+                currency = 'USD'
+                if i_amount is not None:
+                    m = re.search(r'\(([A-Z]{3})\)', _clean_cell(table[header_idx][i_amount]))
+                    if m:
+                        currency = m.group(1)
+
+                for row in table[header_idx + 1:]:
+                    if not row:
+                        continue
+                    cells = [(_clean_cell(c) if c is not None else '') for c in row]
+                    joined = ' '.join(cells)
+
+                    # 합계 행: '조회기간 해외배송 합계 ... USD 254.83'
+                    if '합계' in joined:
+                        m = re.search(r'([A-Z]{3})\s*([\d,]+(?:\.\d+)?)', joined)
+                        if m:
+                            declared_total[m.group(1)] = _num(m.group(2))
+                        continue
+
+                    date_value = _normalize_korean_date(cells[i_date]) if i_date is not None and i_date < len(cells) else ''
+                    amount = _num(cells[i_amount]) if i_amount is not None and i_amount < len(cells) else 0.0
+                    if not date_value or not amount:
+                        continue
+
+                    destination = cells[i_dest] if i_dest is not None and i_dest < len(cells) else ''
+                    items.append({
+                        'service': cells[i_service] if i_service is not None and i_service < len(cells) else '해외배송서비스',
+                        'carrier': carrier,
+                        'origin': 'KR',
+                        'destination': destination,
+                        'country': destination,
+                        'order_id': cells[i_order] if i_order is not None and i_order < len(cells) else '',
+                        'tracking_no': cells[i_track] if i_track is not None and i_track < len(cells) else '',
+                        'item_name': cells[i_name] if i_name is not None and i_name < len(cells) else '',
+                        'currency': currency,
+                        'qty': 1,
+                        'amount': amount,
+                        'date': date_value,
+                        'rate_basis': 'daily',
+                    })
+
+    items.sort(key=lambda it: (it.get('date', ''), it.get('order_id', '')))
+
+    dates = [it['date'] for it in items if it.get('date')]
+    if not period_start and dates:
+        period_start = min(dates)
+    if not period_end and dates:
+        period_end = max(dates)
+    if not write_date:
+        write_date = period_end
+
+    total_by_currency = {}
+    for it in items:
+        cur = it.get('currency', '')
+        total_by_currency[cur] = round(total_by_currency.get(cur, 0.0) + float(it.get('amount', 0) or 0), 2)
+
+    total_mismatch = any(
+        abs(total_by_currency.get(cur, 0.0) - float(value or 0)) > 0.01
+        for cur, value in declared_total.items()
+    )
+    if total_mismatch:
+        print(f"  ⚠️ Joom 합계 불일치 - PDF 합계 {declared_total} / 건별 합계 {total_by_currency}")
+
+    print(f"  Joom PDF 인식 - {len(items)}건 / " +
+          ", ".join(f"{v:,.2f} {k}" for k, v in total_by_currency.items()))
+
+    return {
+        'type': 'joom',
+        'platform': 'Joom',
+        'carrier': carrier,
+        'submitter': submitter,
+        'period_start': period_start,
+        'period_end': period_end,
+        'write_date': write_date,
+        'items': items,
+        'declared_total': declared_total,
+        'total_by_currency': total_by_currency,
+        'total_mismatch': total_mismatch,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
 # 큐텐 PDF (이미지 기반 → OCR 자동 추출)
 # ─────────────────────────────────────────────────────────────────
 
@@ -822,8 +1031,9 @@ def parse_pdf(pdf_path: str, forced_type: str = None) -> Optional[dict]:
     """PDF 종류 자동 감지 또는 사용자가 선택한 종류로 파싱"""
     pdf_type = (forced_type or detect_pdf_type(pdf_path) or 'unknown').strip().lower()
     aliases = {
-        'ebay_lincos': 'ebay', 'lincos': 'ebay', '이베이': 'ebay',
+        'ebay_lincos': 'ebay', 'lincos': 'ebay', '이베이': 'ebay', '린코스': 'ebay',
         '쇼피': 'shopee', '라자다': 'lazada', '큐텐': 'qoo10', '큐텐재팬': 'qoo10',
+        '조옴': 'joom', 'h3': 'joom', '에이치3네트웍스': 'joom',
     }
     pdf_type = aliases.get(pdf_type, pdf_type)
     print(f"  파싱 중: {Path(pdf_path).name} → [{pdf_type}]")
@@ -836,6 +1046,8 @@ def parse_pdf(pdf_path: str, forced_type: str = None) -> Optional[dict]:
         return parse_qoo10_pdf(pdf_path)
     elif pdf_type == 'ebay':
         return parse_ebay_lincos_pdf(pdf_path)
+    elif pdf_type == 'joom':
+        return parse_joom_pdf(pdf_path)
     else:
         print(f"  ⚠️  알 수 없는 PDF 형식: {Path(pdf_path).name}")
         return None

@@ -153,7 +153,8 @@ def _months_between(start, end):
     return out
 
 
-def period_labels(shopee_results, lazada_result, qoo10_result, ebay_results=None, fallback=''):
+def period_labels(shopee_results, lazada_result, qoo10_result, ebay_results=None,
+                  joom_results=None, shopify_results=None, fallback=''):
     """데이터 거래기간으로 (표시용, 파일명용) 라벨 생성.
     예: 10월 / 10~12월 / 1~12월 / 3,5,9월(파일명) · 3/5/9월(표시)."""
     pairs = []
@@ -165,6 +166,10 @@ def period_labels(shopee_results, lazada_result, qoo10_result, ebay_results=None
         pairs.append((qoo10_result.get('period_start', ''), qoo10_result.get('period_end', '')))
     for er in (ebay_results or []):
         pairs.append((er.get('period_start', ''), er.get('period_end', '')))
+    for jr in (joom_results or []):
+        pairs.append((jr.get('period_start', ''), jr.get('period_end', '')))
+    for sr in (shopify_results or []):
+        pairs.append((sr.get('period_start', ''), sr.get('period_end', '')))
     yms = set()
     for s_, e_ in pairs:
         yms.update(_months_between(s_, e_))
@@ -535,10 +540,15 @@ def write_currency_template_sheet(ws, currency: str,
                                    rates: dict,
                                    lazada_write_date: str = '',
                                    lazada_rate_override: float = None,
-                                   ebay_items: list = None):
+                                   ebay_items: list = None,
+                                   joom_items: list = None,
+                                   shopify_items: list = None):
     """
     MYR, PHP, SGD 등 수출신고 프로그램용 시트 작성
     환율: 각 소포수령증 발행일(write_date) 기준
+
+    1~5행은 플랫폼별 요약(쇼피·라자다·이베이·Joom·쇼피파이),
+    6행이 헤더, 7행부터 거래 데이터입니다.
     """
     ws.column_dimensions['A'].width = 18
     ws.column_dimensions['B'].width = 16
@@ -610,33 +620,53 @@ def write_currency_template_sheet(ws, currency: str,
         ebay_fx += amount
         ebay_krw += round(amount * rate / divisor)
 
-    total_krw = shopee_krw + lazada_krw + ebay_krw
+    # ── Joom / 쇼피파이 소계: 건별 기준일 일별 환율 사용 ──
+    joom_items = sorted(joom_items or [], key=lambda it: (_date_to_int(it.get('date')) or 0,
+                                                          str(it.get('order_id', ''))))
+    shopify_items = sorted(shopify_items or [], key=lambda it: (_date_to_int(it.get('date')) or 0,
+                                                                str(it.get('order_name', ''))))
 
-    # ── 행 1-3 요약 ──
-    ws.cell(row=1, column=5, value='쇼피')
-    ws.cell(row=1, column=6, value=shopee_fx)
-    ws.cell(row=1, column=7, value=shopee_krw)
-    ws.cell(row=2, column=5, value='라자다')
-    ws.cell(row=2, column=6, value=lazada_fx)
-    ws.cell(row=2, column=7, value=lazada_krw)
-    ws.cell(row=3, column=5, value='이베이')
-    ws.cell(row=3, column=6, value=ebay_fx)
-    ws.cell(row=3, column=7, value=ebay_krw)
+    def _daily_subtotal(entries):
+        fx = 0.0
+        krw = 0
+        for entry in entries:
+            value = float(entry.get('amount', 0) or 0)
+            entry_rate = _get_rate(rates, currency, entry.get('date', ''))
+            fx += value
+            krw += round(value * entry_rate / divisor)
+        return fx, krw
 
-    for row in [1, 2, 3]:
+    joom_fx, joom_krw = _daily_subtotal(joom_items)
+    shopify_fx, shopify_krw = _daily_subtotal(shopify_items)
+
+    total_krw = shopee_krw + lazada_krw + ebay_krw + joom_krw + shopify_krw
+
+    # ── 행 1-5 플랫폼별 요약 ──
+    summary_rows = [
+        ('쇼피', shopee_fx, shopee_krw),
+        ('라자다', lazada_fx, lazada_krw),
+        ('이베이', ebay_fx, ebay_krw),
+        ('Joom', joom_fx, joom_krw),
+        ('쇼피파이', shopify_fx, shopify_krw),
+    ]
+    for row, (label, fx_value, krw_value) in enumerate(summary_rows, 1):
+        ws.cell(row=row, column=5, value=label)
+        ws.cell(row=row, column=6, value=fx_value)
+        ws.cell(row=row, column=7, value=krw_value)
         for col in [5, 6, 7]:
             c = ws.cell(row=row, column=col)
             nf = NUM_FMT2 if col == 6 else (NUM_FMT if col == 7 else None)
             _style(c, font=FONT_DEFAULT, align=RIGHT, num_format=nf)
 
-    # ── 행 4: 헤더 ──
+    # ── 행 6: 헤더 ──
+    header_row = len(summary_rows) + 1
     headers = ['수출신고번호', '기타영세율건수', '선(기)적일자', '통화코드', '환율', '외화금액', '원화금액']
     for col, h in enumerate(headers, 1):
-        c = ws.cell(row=4, column=col, value=h)
+        c = ws.cell(row=header_row, column=col, value=h)
         _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
 
-    # ── 행 5+: 쇼피 거래 (여러 PDF를 한 시트에 합쳐 날짜순 정렬) ──
-    data_row = 5
+    # ── 행 7+: 쇼피 거래 (여러 PDF를 한 시트에 합쳐 날짜순 정렬) ──
+    data_row = header_row + 1
     for tx in shopee_transactions:
         tx_rate  = _get_rate(rates, currency, tx.get('date', ''))
         amount   = float(tx.get('amount', 0) or 0)
@@ -671,6 +701,19 @@ def write_currency_template_sheet(ws, currency: str,
         krw = round(amount * rate / divisor)
         date_int_ebay = _date_to_int(it.get('date') or it.get('period_end') or '')
         row_vals = ['', 1, date_int_ebay, currency, rate, amount, krw]
+        for col, v in enumerate(row_vals, 1):
+            c = ws.cell(row=data_row, column=col, value=v)
+            nf = {5: _applied_rate_format(currency), 6: NUM_FMT2, 7: NUM_FMT}.get(col)
+            _style(c, font=FONT_DEFAULT, align=CENTER, border=THIN_BORDER, num_format=nf)
+        data_row += 1
+
+    # ── Joom / 쇼피파이 거래 (건별 기준일 일별 환율 적용) ──
+    for it in list(joom_items) + list(shopify_items):
+        item_date = it.get('date', '')
+        rate = _get_rate(rates, currency, item_date)
+        amount = float(it.get('amount', 0) or 0)
+        krw = round(amount * rate / divisor)
+        row_vals = ['', 1, _date_to_int(item_date), currency, rate, amount, krw]
         for col, v in enumerate(row_vals, 1):
             c = ws.cell(row=data_row, column=col, value=v)
             nf = {5: _applied_rate_format(currency), 6: NUM_FMT2, 7: NUM_FMT}.get(col)
@@ -993,6 +1036,194 @@ def write_ebay_receipt_sheet(ws, ebay_data: dict, rates: dict, submitter: dict =
             nf = {5: NUM_FMT, 6: NUM_FMT2, 7: _applied_rate_format(cur), 8: NUM_FMT}.get(c)
             _style(cell, font=FONT_DEFAULT, align=CENTER if c not in [6,8] else RIGHT, border=THIN_BORDER, num_format=nf)
 
+# ── Joom(에이치3네트웍스) 소포수령증 시트 ───────────────────────
+
+def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
+    """Joom [상품 수령 및 운송 확인증] 시트.
+
+    건별 발송날짜의 일별 매매기준율을 적용합니다.
+    """
+    widths = {'A': 16, 'B': 12, 'C': 14, 'D': 10, 'E': 26, 'F': 12, 'G': 12, 'H': 14, 'I': 40}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    sub = submitter or joom_data.get('submitter') or DEFAULT_SUBMITTER
+    ws['A1'] = '상품 수령 및 운송 확인증 - Joom'
+    _style(ws['A1'], font=FONT_TITLE, align=CENTER)
+    ws.merge_cells('A1:I1')
+
+    info = [
+        ('사업자등록번호', sub.get('biz_no', ''), '법인명', sub.get('name', '')),
+        ('대표자 성명', sub.get('ceo', ''), '법인 주소', sub.get('address', '')),
+        ('조회기간', f"{joom_data.get('period_start','')} ~ {joom_data.get('period_end','')}",
+         '작성일자', joom_data.get('write_date', '')),
+    ]
+    r = 3
+    for k1, v1, k2, v2 in info:
+        for c, v in enumerate([k1, v1, k2, v2], 1):
+            cell = ws.cell(row=r, column=c, value=v)
+            _style(cell, font=FONT_BOLD if c in (1, 3) else FONT_DEFAULT,
+                   fill=HEADER_FILL if c in (1, 3) else None,
+                   align=CENTER if c in (1, 3) else LEFT, border=THIN_BORDER)
+        r += 1
+
+    r += 1
+    ws.cell(row=r, column=1, value='2. 해외배송 내역서')
+    _style(ws.cell(row=r, column=1), font=FONT_BOLD)
+    r += 1
+    ws.cell(row=r, column=1, value='발행목적')
+    ws.cell(row=r, column=2, value=f"{joom_data.get('carrier') or 'H3 NETWORKS'}를 통해 해외로 수출한 내역 증명")
+    r += 1
+
+    headers = ['서비스', '발송날짜', 'Order ID', '도착국가', '접수번호',
+               '금액', '적용환율', '원화금액', '상품명']
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=r, column=c, value=h)
+        _style(cell, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
+
+    total_fx = 0.0
+    total_krw = 0
+    for item in joom_data.get('items', []):
+        r += 1
+        cur = item.get('currency', 'USD')
+        rate = _get_rate(rates, cur, item.get('date', ''))
+        amount = float(item.get('amount', 0) or 0)
+        krw = round(amount * rate / RATE_DIVISOR.get(cur, 1))
+        total_fx += amount
+        total_krw += krw
+        vals = [item.get('service', ''), item.get('date', ''), item.get('order_id', ''),
+                item.get('destination', ''), item.get('tracking_no', ''),
+                amount, rate, krw, item.get('item_name', '')]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=v)
+            nf = {6: NUM_FMT2, 7: _applied_rate_format(cur), 8: NUM_FMT}.get(c)
+            _style(cell, font=FONT_DEFAULT,
+                   align=RIGHT if c in (6, 7, 8) else (LEFT if c == 9 else CENTER),
+                   border=THIN_BORDER, num_format=nf)
+
+    r += 1
+    ws.cell(row=r, column=1, value='조회기간 해외배송 합계')
+    ws.cell(row=r, column=6, value=total_fx)
+    ws.cell(row=r, column=8, value=total_krw)
+    for c in range(1, 10):
+        nf = {6: NUM_FMT2, 8: NUM_FMT}.get(c)
+        _style(ws.cell(row=r, column=c), font=FONT_BOLD, fill=GRAY_FILL,
+               align=RIGHT if c in (6, 8) else CENTER, border=THIN_BORDER, num_format=nf)
+
+    # PDF 합계 행과 건별 합계가 다르면 확인할 수 있도록 남깁니다.
+    declared = joom_data.get('declared_total') or {}
+    if declared:
+        r += 1
+        ws.cell(row=r, column=1, value='PDF 합계 표기')
+        ws.cell(row=r, column=6, value=sum(float(v or 0) for v in declared.values()))
+        _style(ws.cell(row=r, column=1), font=FONT_DEFAULT, align=CENTER)
+        _style(ws.cell(row=r, column=6), font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT2)
+        if joom_data.get('total_mismatch'):
+            ws.cell(row=r, column=7, value='⚠️ 건별 합계와 불일치')
+            _style(ws.cell(row=r, column=7), font=Font(name='맑은 고딕', size=9, color='FF0000'))
+
+
+# ── 쇼피파이 주문내역 시트 ──────────────────────────────────────
+
+def write_shopify_sheet(ws, shopify_data: dict, rates: dict):
+    """쇼피파이 orders export 원본을 그대로 두고 날짜·환율·원화 열만 삽입합니다.
+
+    - `날짜`  : Fulfilled at 의 날짜 부분 (배송완료 = 매출 기준일)
+    - `환율`  : 해당 날짜의 일별 매매기준율
+    - `원화`  : Total × 환율
+    미배송/취소 주문은 원본 행은 유지하되 환율·원화를 비워 매출에서 제외합니다.
+    """
+    headers = list(shopify_data.get('headers', []))
+    rows = shopify_data.get('rows', [])
+    flags = {f['index']: f for f in shopify_data.get('row_flags', [])}
+
+    def _norm(value):
+        return re.sub(r'[^a-z0-9]', '', str(value or '').strip().lower())
+
+    normalized = [_norm(h) for h in headers]
+    i_fulfilled = normalized.index('fulfilledat') if 'fulfilledat' in normalized else len(headers) - 1
+    i_total = normalized.index('total') if 'total' in normalized else len(headers) - 1
+    i_currency = normalized.index('currency') if 'currency' in normalized else None
+
+    # 삽입 위치: Fulfilled at 뒤에 날짜, Total 뒤에 환율·원화
+    out_headers = []
+    source_index = []          # 출력 열 → 원본 열 index (삽입 열은 None)
+    for idx, header in enumerate(headers):
+        out_headers.append(header)
+        source_index.append(idx)
+        if idx == i_fulfilled:
+            out_headers.append('날짜')
+            source_index.append(None)
+        if idx == i_total:
+            out_headers.extend(['환율', '원화'])
+            source_index.extend([None, None])
+
+    date_col = out_headers.index('날짜') + 1
+    rate_col = out_headers.index('환율') + 1
+    krw_col = out_headers.index('원화') + 1
+
+    for col, header in enumerate(out_headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        _style(cell, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
+    ws.column_dimensions[get_column_letter(date_col)].width = 12
+    ws.column_dimensions[get_column_letter(rate_col)].width = 10
+    ws.column_dimensions[get_column_letter(krw_col)].width = 14
+    ws.freeze_panes = 'A2'
+
+    total_fx = 0.0
+    total_krw = 0
+    excel_row = 2
+    for row_index, values in enumerate(rows):
+        flag = flags.get(row_index, {})
+        counted = bool(flag.get('counted'))
+        date_value = flag.get('date', '')
+        currency = ''
+        if i_currency is not None and i_currency < len(values):
+            currency = str(values[i_currency] or '').upper()
+        currency = currency or 'USD'
+
+        rate = _get_rate(rates, currency, date_value) if counted else None
+        amount = float(values[i_total] or 0) if counted and i_total < len(values) else 0.0
+        krw = round(amount * (rate or 0) / RATE_DIVISOR.get(currency, 1)) if counted else None
+        if counted:
+            total_fx += amount
+            total_krw += krw
+
+        for col, src in enumerate(source_index, 1):
+            if src is None:
+                continue
+            value = values[src] if src < len(values) else None
+            cell = ws.cell(row=excel_row, column=col, value=value)
+            _style(cell, font=FONT_DEFAULT)
+        ws.cell(row=excel_row, column=date_col, value=date_value or None)
+        ws.cell(row=excel_row, column=rate_col, value=rate)
+        ws.cell(row=excel_row, column=krw_col, value=krw)
+        _style(ws.cell(row=excel_row, column=date_col), font=FONT_DEFAULT, align=CENTER)
+        _style(ws.cell(row=excel_row, column=rate_col), font=FONT_DEFAULT, align=RIGHT,
+               num_format=_applied_rate_format(currency))
+        _style(ws.cell(row=excel_row, column=krw_col), font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT)
+        excel_row += 1
+
+    # 합계는 출력 기준 Total 열(= 환율 열 바로 왼쪽)에 씁니다.
+    total_col = rate_col - 1
+    excel_row += 1
+    ws.cell(row=excel_row, column=1, value='합계 (배송완료 기준)')
+    ws.cell(row=excel_row, column=total_col, value=total_fx)
+    ws.cell(row=excel_row, column=krw_col, value=total_krw)
+    _style(ws.cell(row=excel_row, column=1), font=FONT_BOLD, fill=GRAY_FILL, align=LEFT, border=THIN_BORDER)
+    _style(ws.cell(row=excel_row, column=total_col), font=FONT_BOLD, fill=GRAY_FILL,
+           align=RIGHT, border=THIN_BORDER, num_format=NUM_FMT2)
+    _style(ws.cell(row=excel_row, column=krw_col), font=FONT_BOLD, fill=GRAY_FILL,
+           align=RIGHT, border=THIN_BORDER, num_format=NUM_FMT)
+
+    skipped = int(shopify_data.get('skipped_unfulfilled', 0) or 0)
+    if skipped:
+        excel_row += 1
+        ws.cell(row=excel_row, column=1,
+                value=f'※ 미배송/취소(Fulfilled at 없음) {skipped}건은 매출에서 제외했습니다.')
+        _style(ws.cell(row=excel_row, column=1), font=Font(name='맑은 고딕', size=9, color='C00000'))
+
+
 # ── 큐텐 소포수령증 시트 ────────────────────────────────────────
 
 def write_qoo10_sheet(ws, qoo10_data: Optional[dict], jpy_rate: float, submitter: dict = None):
@@ -1098,7 +1329,8 @@ def write_qoo10_sheet(ws, qoo10_data: Optional[dict], jpy_rate: float, submitter
 def write_summary_sheet(ws, shopee_totals: dict, lazada_totals: dict,
                          qoo10_data: Optional[dict], jpy_rate: float,
                          year_month: str, submitter: dict = None,
-                         ebay_totals: dict = None):
+                         ebay_totals: dict = None, joom_totals: dict = None,
+                         shopify_totals: dict = None):
     """총집계 시트 작성.
 
     실제 집계된 플랫폼만 표시합니다. 예를 들어 이베이 자료만 처리한 경우
@@ -1155,6 +1387,9 @@ def write_summary_sheet(ws, shopee_totals: dict, lazada_totals: dict,
     shopee_totals = shopee_totals or {}
     lazada_totals = lazada_totals or {}
     ebay_totals = ebay_totals or {}
+    joom_totals = joom_totals or {}
+    # 쇼피파이는 스토어 단위로 파일이 오므로 '스토어(통화)' 키를 그대로 표시합니다.
+    shopify_totals = shopify_totals or {}
 
     row = 5
     written_platforms = 0
@@ -1202,6 +1437,36 @@ def write_summary_sheet(ws, shopee_totals: dict, lazada_totals: dict,
             krw = data.get('krw', 0)
             total_krw += krw
             _datarow(data_row, COUNTRY_NAMES.get(cur, cur), fx, krw)
+            data_row += 1
+        _totalrow(data_row, total_krw)
+        row = data_row + 2
+        written_platforms += 1
+
+    if joom_totals:
+        _sub(row, 'Joom')
+        _hdr3(row + 1, '통화', '외화', '원화')
+        data_row = row + 2
+        total_krw = 0
+        for cur in _ordered_currencies(joom_totals.keys()):
+            data = joom_totals.get(cur, {})
+            krw = data.get('krw', 0)
+            total_krw += krw
+            _datarow(data_row, COUNTRY_NAMES.get(cur, cur), data.get('fx', 0.0), krw)
+            data_row += 1
+        _totalrow(data_row, total_krw)
+        row = data_row + 2
+        written_platforms += 1
+
+    if shopify_totals:
+        _sub(row, '쇼피파이')
+        _hdr3(row + 1, '스토어(통화)', '외화', '원화')
+        data_row = row + 2
+        total_krw = 0
+        for key in sorted(shopify_totals.keys()):
+            data = shopify_totals.get(key, {})
+            krw = data.get('krw', 0)
+            total_krw += krw
+            _datarow(data_row, key, data.get('fx', 0.0), krw)
             data_row += 1
         _totalrow(data_row, total_krw)
         row = data_row + 2
@@ -1311,6 +1576,43 @@ def _ebay_sheet_names_for_results(ebay_results):
     return [f'이베이({i})' for i, _ in enumerate(items, 1)]
 
 
+def _has_joom_data(joom_result):
+    return bool(joom_result and joom_result.get('items'))
+
+
+def _joom_sheet_names_for_results(joom_results):
+    items = [jr for jr in (joom_results or []) if _has_joom_data(jr)]
+    if not items:
+        return []
+    if len(items) == 1:
+        return ['Joom']
+    return [f'Joom({i})' for i, _ in enumerate(items, 1)]
+
+
+def _has_shopify_data(shopify_result):
+    return bool(shopify_result and shopify_result.get('items'))
+
+
+def _shopify_sheet_names_for_results(shopify_results):
+    """스토어명으로 시트를 만들고 중복되면 번호를 붙입니다."""
+    names = []
+    used = {}
+    for sr in (shopify_results or []):
+        if not _has_shopify_data(sr):
+            continue
+        # 엑셀 시트명에 쓸 수 없는 문자와 31자 제한을 정리합니다.
+        store = re.sub(r'[\[\]:*?/\\]', '_', str(sr.get('store') or '').strip()) or '주문내역'
+        base = f'쇼피파이({store})'[:31]
+        used[base] = used.get(base, 0) + 1
+        names.append(base if used[base] == 1 else f'{base[:28]}({used[base]})')
+    return names
+
+
+def _shopify_total_key(shopify_result, currency):
+    store = str((shopify_result or {}).get('store') or '').strip() or '주문내역'
+    return f'{store}({currency})'
+
+
 def _has_qoo10_data(qoo10_result):
     if not qoo10_result:
         return False
@@ -1319,10 +1621,11 @@ def _has_qoo10_data(qoo10_result):
     return bool(qoo10_result.get('qty', 0) or qoo10_result.get('amount', 0) or qoo10_result.get('tracking_no'))
 
 
-def _infer_used_sources_and_currencies(shopee_results, lazada_result, qoo10_result, ebay_results=None):
+def _infer_used_sources_and_currencies(shopee_results, lazada_result, qoo10_result, ebay_results=None,
+                                       joom_results=None, shopify_results=None):
     """
     실제 입력 데이터가 있는 소스/통화만 추려냅니다.
-    이 결과를 기준으로 불필요한 쇼피/라자다/큐텐/이베이/환율/통화시트를 만들지 않습니다.
+    이 결과를 기준으로 불필요한 쇼피/라자다/큐텐/이베이/Joom/쇼피파이/환율/통화시트를 만들지 않습니다.
     """
     shopee_currencies = {sd.get('currency') for sd in (shopee_results or []) if _has_shopee_data(sd)}
     lazada_currencies = set()
@@ -1332,14 +1635,25 @@ def _infer_used_sources_and_currencies(shopee_results, lazada_result, qoo10_resu
     for er in (ebay_results or []):
         if _has_ebay_data(er):
             ebay_currencies.update(it.get('currency') for it in er.get('items', []) if it.get('currency'))
+    joom_currencies = set()
+    for jr in (joom_results or []):
+        if _has_joom_data(jr):
+            joom_currencies.update(it.get('currency') for it in jr.get('items', []) if it.get('currency'))
+    shopify_currencies = set()
+    for sr in (shopify_results or []):
+        if _has_shopify_data(sr):
+            shopify_currencies.update(it.get('currency') for it in sr.get('items', []) if it.get('currency'))
     qoo10_used = _has_qoo10_data(qoo10_result)
-    used_currencies = set(shopee_currencies) | set(lazada_currencies) | set(ebay_currencies)
+    used_currencies = (set(shopee_currencies) | set(lazada_currencies) | set(ebay_currencies)
+                       | set(joom_currencies) | set(shopify_currencies))
     if qoo10_used:
         used_currencies.add('JPY')
     return {
         'shopee_currencies': _ordered_currencies(shopee_currencies),
         'lazada_currencies': _ordered_currencies(lazada_currencies),
         'ebay_currencies': _ordered_currencies(ebay_currencies),
+        'joom_currencies': _ordered_currencies(joom_currencies),
+        'shopify_currencies': _ordered_currencies(shopify_currencies),
         'qoo10_used': qoo10_used,
         'used_currencies': _ordered_currencies(used_currencies),
     }
@@ -1397,7 +1711,9 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
                                 lazada_write_date: str = '',
                                 jpy_rate: float = 0.0,
                                 submitter: dict = None,
-                                ebay_results: list = None):
+                                ebay_results: list = None,
+                                joom_results: list = None,
+                                shopify_results: list = None):
     """
     월별집계 시트 작성.
     기준일은 각 문서의 수출실적/통화 시트에 들어가는 선(기)적일자와 동일하게 봅니다.
@@ -1493,6 +1809,24 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
                 'fx': amount, 'krw': krw,
             })
 
+    # Joom / 쇼피파이: 건별 기준일(발송날짜 · Fulfilled at) 일별 환율
+    for source_label, results in (('Joom', joom_results or []), ('쇼피파이', shopify_results or [])):
+        for res in results:
+            for it in res.get('items', []):
+                cur = it.get('currency', '')
+                if not cur:
+                    continue
+                amount = float(it.get('amount', 0) or 0)
+                qty = int(it.get('qty', 1) or 0)
+                div = RATE_DIVISOR.get(cur, 1)
+                item_date = it.get('date', '')
+                rate = _get_rate(rates, cur, item_date)
+                rows.append({
+                    'month': _month_label_from_date(item_date),
+                    'source': source_label, 'currency': cur, 'qty': qty,
+                    'fx': amount, 'krw': round(amount * rate / div),
+                })
+
     # 큐텐: 입력 건별 거래기간 종료일 기준
     if qoo10_result and qoo10_result.get('entries'):
         for e in qoo10_result.get('entries', []):
@@ -1523,7 +1857,7 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
     grand_fx_by_currency = {}
     grand_krw = 0
     months = sorted({k[0] for k in grouped.keys()})
-    source_order = {'쇼피': 1, '라자다': 2, '이베이': 3, '큐텐': 4}
+    source_order = {'쇼피': 1, '라자다': 2, '이베이': 3, 'Joom': 4, '쇼피파이': 5, '큐텐': 6}
 
     for month in months:
         month_qty = 0
@@ -1592,13 +1926,18 @@ def generate_excel(
     year:           int,
     month:          int,
     ebay_results:   Optional[list] = None,
+    joom_results:   Optional[list] = None,
+    shopify_results: Optional[list] = None,
 ):
     """전체 엑셀 파일 생성"""
     wb = Workbook()
     wb.remove(wb.active)
 
     ebay_results = ebay_results or []
-    usage = _infer_used_sources_and_currencies(shopee_results, lazada_result, qoo10_result, ebay_results)
+    joom_results = joom_results or []
+    shopify_results = shopify_results or []
+    usage = _infer_used_sources_and_currencies(shopee_results, lazada_result, qoo10_result, ebay_results,
+                                               joom_results=joom_results, shopify_results=shopify_results)
     shopee_currencies = usage['shopee_currencies']
     lazada_currencies = usage['lazada_currencies']
     qoo10_used = usage['qoo10_used']
@@ -1685,6 +2024,11 @@ def generate_excel(
             if er.get('submitter') and er['submitter'].get('name'):
                 report_submitter = er['submitter']
                 break
+    if report_submitter is None:
+        for jr in joom_results:
+            if jr.get('submitter') and jr['submitter'].get('name'):
+                report_submitter = jr['submitter']
+                break
     if report_submitter is None and qoo10_result and qoo10_result.get('submitter', {}).get('name'):
         report_submitter = qoo10_result['submitter']
     if report_submitter is None:
@@ -1695,6 +2039,8 @@ def generate_excel(
     shopee_totals = {}
     lazada_totals = {}
     ebay_totals = {}
+    joom_totals = {}
+    shopify_totals = {}
 
     for sd in shopee_results:
         cur = sd.get('currency', '')
@@ -1750,13 +2096,42 @@ def generate_excel(
             ebay_totals[cur]['fx'] += amount
             ebay_totals[cur]['krw'] += krw
 
+    # Joom: 발송날짜 일별 매매기준율
+    for jr in joom_results:
+        for it in jr.get('items', []):
+            cur = it.get('currency', '')
+            if not cur:
+                continue
+            rate = _get_rate(rates, cur, it.get('date', ''))
+            amount = float(it.get('amount', 0) or 0)
+            krw = round(amount * rate / RATE_DIVISOR.get(cur, 1))
+            joom_totals.setdefault(cur, {'fx': 0.0, 'krw': 0})
+            joom_totals[cur]['fx'] += amount
+            joom_totals[cur]['krw'] += krw
+
+    # 쇼피파이: Fulfilled at 일별 매매기준율 (스토어 × 통화로 표시)
+    for sr in shopify_results:
+        for it in sr.get('items', []):
+            cur = it.get('currency', '')
+            if not cur:
+                continue
+            rate = _get_rate(rates, cur, it.get('date', ''))
+            amount = float(it.get('amount', 0) or 0)
+            krw = round(amount * rate / RATE_DIVISOR.get(cur, 1))
+            key = _shopify_total_key(sr, cur)
+            shopify_totals.setdefault(key, {'fx': 0.0, 'krw': 0})
+            shopify_totals[key]['fx'] += amount
+            shopify_totals[key]['krw'] += krw
+
     period_label, _ = period_labels(shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results,
+                                    joom_results=joom_results, shopify_results=shopify_results,
                                     fallback=f'{year}년 {month:02d}월')
 
     write_summary_sheet(ws_summary, shopee_totals, lazada_totals,
                         qoo10_result, jpy_rate,
                         period_label, submitter=report_submitter,
-                        ebay_totals=ebay_totals)
+                        ebay_totals=ebay_totals, joom_totals=joom_totals,
+                        shopify_totals=shopify_totals)
 
     # ── 월별집계 ─────────────────────────────────────────────
     # 총집계 바로 오른쪽에 배치합니다.
@@ -1765,7 +2140,9 @@ def generate_excel(
                                 rates, lazada_avg_rates=lazada_avg_rates,
                                 lazada_write_date=lazada_write_date,
                                 jpy_rate=jpy_rate, submitter=report_submitter,
-                                ebay_results=ebay_results)
+                                ebay_results=ebay_results,
+                                joom_results=joom_results,
+                                shopify_results=shopify_results)
 
     # ── 통화별 수출신고 템플릿 시트
     # 실제 쇼피/라자다/큐텐 데이터가 있는 통화만 생성합니다.
@@ -1781,10 +2158,18 @@ def generate_excel(
         ebay_items = []
         for er in ebay_results:
             ebay_items.extend([it for it in er.get('items', []) if it.get('currency') == cur])
+        joom_items = []
+        for jr in joom_results:
+            joom_items.extend([it for it in jr.get('items', []) if it.get('currency') == cur])
+        shopify_items = []
+        for sr in shopify_results:
+            shopify_items.extend([it for it in sr.get('items', []) if it.get('currency') == cur])
         write_currency_template_sheet(ws, cur, sd, lazada_items, rates,
                                       lazada_write_date=lazada_write_date,
                                       lazada_rate_override=lazada_avg_rates.get(cur),
-                                      ebay_items=ebay_items)
+                                      ebay_items=ebay_items,
+                                      joom_items=joom_items,
+                                      shopify_items=shopify_items)
 
     # ── JPY 수출신고 시트 (큐텐 데이터가 있을 때만 생성) ──
     if qoo10_used:
@@ -1847,6 +2232,18 @@ def generate_excel(
         ws_ebay = wb.create_sheet(ebay_sheet_names[idx])
         write_ebay_receipt_sheet(ws_ebay, er, rates, submitter=er.get('submitter') or report_submitter)
 
+    # ── Joom 원본 PDF별 시트
+    joom_sheet_names = _joom_sheet_names_for_results(joom_results)
+    for idx, jr in enumerate([x for x in joom_results if _has_joom_data(x)]):
+        ws_joom = wb.create_sheet(joom_sheet_names[idx])
+        write_joom_sheet(ws_joom, jr, rates, submitter=jr.get('submitter') or report_submitter)
+
+    # ── 쇼피파이 스토어별 주문내역 시트
+    shopify_sheet_names = _shopify_sheet_names_for_results(shopify_results)
+    for idx, sr in enumerate([x for x in shopify_results if _has_shopify_data(x)]):
+        ws_shopify = wb.create_sheet(shopify_sheet_names[idx])
+        write_shopify_sheet(ws_shopify, sr, rates)
+
     # ── 환율 시트
     # 실제 데이터가 있는 통화만 생성합니다.
     for cur in used_currencies:
@@ -1863,6 +2260,8 @@ def generate_excel(
         keep_sheets.add(_lazada_source_sheet_name(lazada_result))
         keep_sheets.update(f'라자다({cur})' for cur in lazada_currencies)
     keep_sheets.update(_ebay_sheet_names_for_results(ebay_results))
+    keep_sheets.update(_joom_sheet_names_for_results(joom_results))
+    keep_sheets.update(_shopify_sheet_names_for_results(shopify_results))
     keep_sheets.update(f'환율({cur})' for cur in used_currencies)
     _prune_workbook_sheets(wb, keep_sheets)
 

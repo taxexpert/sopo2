@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-소포수령증 자동화 웹앱 — v52 라자다 주문내역 Excel 지원
+소포수령증 자동화 웹앱 — v53 Joom · 쇼피파이 · 린코스 지원
 실행: streamlit run app.py
 """
 
@@ -26,6 +26,9 @@ sys.path.insert(0, str(BASE_DIR))
 from modules.pdf_parser import parse_pdf, detect_pdf_type
 from modules.lazada_order_parser import (
     is_lazada_order_excel, parse_lazada_order_excel, merge_lazada_results,
+)
+from modules.shopify_parser import (
+    is_shopify_orders_file, parse_shopify_orders, merge_shopify_results,
 )
 from modules.excel_writer import generate_excel, period_labels
 from modules.exchange_rate import (
@@ -129,20 +132,33 @@ if "qoo10_auto_imported_keys" not in st.session_state:
 
 # 파일명으로 구분되지 않는 PDF에만 직접 선택 항목을 표시합니다.
 # 일반 화면의 문구와 배치는 v38과 동일하게 유지합니다.
-UNKNOWN_PDF_TYPE_OPTIONS = ["쇼피", "라자다", "큐텐재팬", "이베이"]
+UNKNOWN_PDF_TYPE_OPTIONS = ["쇼피", "라자다", "큐텐재팬", "이베이/린코스", "Joom"]
 UNKNOWN_PDF_TYPE_TO_CODE = {
     "쇼피": "shopee",
     "라자다": "lazada",
     "큐텐재팬": "qoo10",
-    "이베이": "ebay",
+    "이베이/린코스": "ebay",
+    "Joom": "joom",
+}
+
+FILE_TYPE_ICONS = {
+    "shopee": "🛍️", "lazada": "🟠", "lazada_excel": "🟠",
+    "qoo10": "🇯🇵", "ebay": "🛒", "joom": "🌍",
+    "shopify": "🛒", "unknown": "❓", "unknown_excel": "❓", "unknown_csv": "❓",
+}
+FILE_TYPE_LABELS = {
+    "shopee": "쇼피", "lazada": "라자다", "lazada_excel": "라자다 주문내역",
+    "qoo10": "큐텐재팬", "ebay": "이베이/린코스", "joom": "Joom",
+    "shopify": "쇼피파이 주문내역",
+    "unknown": "미확인", "unknown_excel": "미확인 Excel", "unknown_csv": "미확인 CSV",
 }
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 1 — PDF / Excel 업로드
 # ══════════════════════════════════════════════════════════════════
-st.markdown("### 📄 STEP 1 — 소포수령증 PDF / 라자다 Excel 업로드")
+st.markdown("### 📄 STEP 1 — 소포수령증 PDF / 주문내역 Excel·CSV 업로드")
 c_desc, c_reset = st.columns([6, 1])
-c_desc.caption("쇼피, 라자다, 큐텐재팬 PDF와 라자다 주문내역 Excel을 한꺼번에 올려주세요.")
+c_desc.caption("쇼피·라자다·큐텐재팬·이베이(린코스)·Joom PDF와 라자다 주문내역 Excel, 쇼피파이 orders CSV를 한꺼번에 올려주세요.")
 if c_reset.button("🔄 초기화"):
     st.session_state.uploader_key += 1
     st.session_state.qoo10_entries = []
@@ -151,8 +167,8 @@ if c_reset.button("🔄 초기화"):
     st.rerun()
 
 uploaded_files = st.file_uploader(
-    "PDF 또는 Excel 파일 선택",
-    type=["pdf", "xlsx", "xlsm"],
+    "PDF · Excel · CSV 파일 선택",
+    type=["pdf", "xlsx", "xlsm", "csv"],
     accept_multiple_files=True,
     label_visibility="collapsed",
     key=f"file_uploader_{st.session_state.uploader_key}",
@@ -160,13 +176,19 @@ uploaded_files = st.file_uploader(
 
 @st.cache_data(show_spinner=False)
 def _detect_uploaded_file_type(filename: str, payload: bytes) -> str:
-    """PDF는 본문 표식, Excel은 필수 열로 플랫폼을 자동 판별합니다."""
+    """PDF는 본문 표식, Excel/CSV는 필수 열로 플랫폼을 자동 판별합니다."""
     suffix = Path(filename).suffix.lower()
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / (Path(filename).name or f"uploaded{suffix}")
         path.write_bytes(payload)
+        if suffix == ".csv":
+            return "shopify" if is_shopify_orders_file(path) else "unknown_csv"
         if suffix in {".xlsx", ".xlsm"}:
-            return "lazada_excel" if is_lazada_order_excel(path) else "unknown_excel"
+            if is_lazada_order_excel(path):
+                return "lazada_excel"
+            if is_shopify_orders_file(path):
+                return "shopify"
+            return "unknown_excel"
         return detect_pdf_type(str(path))
 
 
@@ -184,8 +206,8 @@ if uploaded_files:
     for i, f in enumerate(uploaded_files):
         payload = f.getvalue()
         ptype = _detect_uploaded_file_type(f.name, payload)
-        icon = {"shopee": "🛍️", "lazada": "🟠", "lazada_excel": "🟠", "qoo10": "🇯🇵", "ebay": "🛒", "unknown": "❓", "unknown_excel": "❓"}.get(ptype, "📄")
-        label = {"shopee": "쇼피", "lazada": "라자다", "lazada_excel": "라자다 주문내역", "qoo10": "큐텐재팬", "ebay": "이베이", "unknown": "미확인", "unknown_excel": "미확인 Excel"}.get(ptype, "")
+        icon = FILE_TYPE_ICONS.get(ptype, "📄")
+        label = FILE_TYPE_LABELS.get(ptype, "")
         target_col = cols[i % 2]
         target_col.markdown(f"{icon} `{f.name}` — {label}")
         if ptype == "unknown":
@@ -197,7 +219,16 @@ if uploaded_files:
             )
             uploaded_type_choices[f.name] = UNKNOWN_PDF_TYPE_TO_CODE[selected_label]
         elif ptype == "unknown_excel":
-            target_col.error("라자다 주문내역 Excel 형식이 아닙니다. deliveredDate와 paidPrice 열을 확인해 주세요.")
+            target_col.error(
+                "인식할 수 없는 Excel입니다. 라자다는 deliveredDate·paidPrice, "
+                "쇼피파이는 Name·Financial Status·Fulfilled at·Total 열이 필요합니다."
+            )
+            uploaded_type_choices[f.name] = ptype
+        elif ptype == "unknown_csv":
+            target_col.error(
+                "쇼피파이 주문내역(orders) CSV가 아닙니다. "
+                "transaction·payout 파일이 아닌 orders 파일을 올려주세요."
+            )
             uploaded_type_choices[f.name] = ptype
         else:
             uploaded_type_choices[f.name] = ptype
@@ -346,20 +377,26 @@ process_btn = st.button(
     disabled=not has_process_input,
 )
 if not has_process_input:
-    st.caption("PDF/라자다 Excel을 업로드하거나 큐텐재팬 정보를 입력하면 생성 버튼이 활성화됩니다.")
+    st.caption("PDF·Excel·CSV를 업로드하거나 큐텐재팬 정보를 입력하면 생성 버튼이 활성화됩니다.")
 
 progress_bar = st.empty()
 status_text = st.empty()
 log_area = st.empty()
 
 
-def _needed_currencies(shopee_results, lazada_result, qoo10_result):
+def _needed_currencies(shopee_results, lazada_result, qoo10_result,
+                       joom_results=None, shopify_results=None):
     used = set()
     for sd in shopee_results or []:
         if sd.get("currency"):
             used.add(sd["currency"])
     if lazada_result:
         for it in lazada_result.get("items", []):
+            if it.get("currency"):
+                used.add(it["currency"])
+    # Joom·쇼피파이는 건별 기준일의 일별 매매기준율을 사용합니다.
+    for res in list(joom_results or []) + list(shopify_results or []):
+        for it in res.get("items", []):
             if it.get("currency"):
                 used.add(it["currency"])
     # 큐텐재팬은 일별/기간평균 환율을 사용하지 않고 반기말(6월/12월)의
@@ -436,7 +473,8 @@ def _filter_monthly_rate_data(rate_data, requested_months):
     result["range"] = round(max(values) - min(values), 2) if values else 0.0
     return result
 
-def _daily_rate_period_bounds(shopee_results, lazada_result, qoo10_result):
+def _daily_rate_period_bounds(shopee_results, lazada_result, qoo10_result,
+                              joom_results=None, shopify_results=None):
     """실제 신고기간의 시작/종료일을 반환합니다. 작성일은 환율시트 기간에 포함하지 않습니다."""
     starts = []
     ends = []
@@ -464,6 +502,14 @@ def _daily_rate_period_bounds(shopee_results, lazada_result, qoo10_result):
         _add(qoo10_result.get("period_start"), qoo10_result.get("period_end"))
         for entry in qoo10_result.get("entries", []):
             _add(entry.get("period_start"), entry.get("period_end"))
+
+    # Joom·쇼피파이는 문서 기간이 아니라 실제 건별 기준일 범위를 사용합니다.
+    for res in list(joom_results or []) + list(shopify_results or []):
+        item_dates = [str(it.get("date", "")) for it in res.get("items", []) if it.get("date")]
+        if item_dates:
+            _add(min(item_dates), max(item_dates))
+        else:
+            _add(res.get("period_start"), res.get("period_end"))
 
     if not starts and not ends:
         return None, None
@@ -522,13 +568,25 @@ if process_btn:
             shopee_results = []
             lazada_results = []
             ebay_results = []
+            joom_results = []
+            shopify_results = []
             for p in input_paths:
                 suffix = p.suffix.lower()
                 selected_type = uploaded_type_choices.get(p.name, "")
 
-                if suffix in {".xlsx", ".xlsm"}:
+                if suffix in {".xlsx", ".xlsm", ".csv"}:
+                    if selected_type == "shopify":
+                        result = parse_shopify_orders(p)
+                        shopify_results.append(result)
+                        totals = result.get("total_by_currency", {})
+                        total_text = ", ".join(f"{amount:,.2f} {cur}" for cur, amount in totals.items())
+                        skipped = int(result.get("skipped_unfulfilled", 0) or 0)
+                        log(f"[OK] 쇼피파이 {result.get('store','')}: {p.name} / "
+                            f"{result.get('row_count', 0):,}건 / {total_text}"
+                            + (f" / 미배송·취소 {skipped:,}건 제외" if skipped else ""))
+                        continue
                     if selected_type != "lazada_excel":
-                        log(f"[WARN] 지원하지 않는 Excel 형식: {p.name}")
+                        log(f"[WARN] 지원하지 않는 Excel/CSV 형식: {p.name}")
                         continue
                     result = parse_lazada_order_excel(p)
                     lazada_results.append(result)
@@ -565,21 +623,35 @@ if process_btn:
                     log(f"[OK] 라자다 PDF: {p.name} / {len(result.get('items', [])):,}건")
                 elif result.get("type") == "ebay":
                     ebay_results.append(result)
-                    log(f"[OK] 이베이: {p.name} / {len(result.get('items', [])):,}건")
+                    currencies = sorted({it.get("currency") for it in result.get("items", []) if it.get("currency")})
+                    log(f"[OK] 이베이/린코스: {p.name} / {len(result.get('items', [])):,}건 / {', '.join(currencies)}")
+                elif result.get("type") == "joom":
+                    joom_results.append(result)
+                    totals = result.get("total_by_currency", {})
+                    total_text = ", ".join(f"{amount:,.2f} {cur}" for cur, amount in totals.items())
+                    log(f"[OK] Joom: {p.name} / {len(result.get('items', [])):,}건 / {total_text}")
+                    if result.get("total_mismatch"):
+                        log(f"[WARN] Joom 합계 불일치: PDF 표기 {result.get('declared_total')} / 건별 {totals}")
 
             lazada_result = merge_lazada_results(lazada_results)
+            shopify_results = merge_shopify_results(shopify_results)
             qoo10_result = _build_qoo10_result()
             if qoo10_result:
                 log(f"[OK] 큐텐 STEP 2: {len(qoo10_result.get('entries', [])):,}건 / {int(qoo10_result.get('amount',0)):,} JPY")
 
-            if not shopee_results and not lazada_result and not qoo10_result and not ebay_results:
-                raise RuntimeError("처리할 데이터가 없습니다. PDF 또는 큐텐 수동 입력을 확인해 주세요.")
+            if not (shopee_results or lazada_result or qoo10_result or ebay_results
+                    or joom_results or shopify_results):
+                raise RuntimeError("처리할 데이터가 없습니다. PDF/Excel/CSV 또는 큐텐 수동 입력을 확인해 주세요.")
             log(f"✅ 파일 분석 완료 ({time.perf_counter() - t_pdf:.1f}초)")
 
             # 환율 수집
-            daily_needed = _needed_currencies(shopee_results, lazada_result, qoo10_result)
+            daily_needed = _needed_currencies(shopee_results, lazada_result, qoo10_result,
+                                              joom_results=joom_results, shopify_results=shopify_results)
             monthly_requests = _monthly_rate_requests(ebay_results, qoo10_result)
-            display_start, display_end = _daily_rate_period_bounds(shopee_results, lazada_result, qoo10_result)
+            display_start, display_end = _daily_rate_period_bounds(
+                shopee_results, lazada_result, qoo10_result,
+                joom_results=joom_results, shopify_results=shopify_results,
+            )
             if display_start is None or display_end is None:
                 today = pd.Timestamp.today().normalize()
                 display_start = today
@@ -616,9 +688,16 @@ if process_btn:
             # 출력 라벨/파일명
             year = rate_end.year
             month = rate_end.month
-            disp_label, fname_label = period_labels(shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results, fallback=f"{year}년 {month:02d}월")
+            disp_label, fname_label = period_labels(
+                shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results,
+                joom_results=joom_results, shopify_results=shopify_results,
+                fallback=f"{year}년 {month:02d}월",
+            )
             fsafe = safe_filename(fname_label or f"{year}{month:02d}")
-            company = company_name_from_results(shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results)
+            company = company_name_from_results(
+                shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results,
+                joom_results=joom_results, shopify_results=shopify_results,
+            )
 
             created = []
             t_excel = time.perf_counter()
@@ -636,6 +715,8 @@ if process_btn:
                         rates=rates,
                         output_path=str(sales_path),
                         ebay_results=ebay_results,
+                        joom_results=joom_results,
+                        shopify_results=shopify_results,
                         year=year,
                         month=month,
                     )
@@ -643,7 +724,11 @@ if process_btn:
                 log(f"[OK] 매출집계 생성: {sales_path.name}")
 
             if make_zero or make_export:
-                rows = build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, ebay_results=ebay_results)
+                rows = build_declaration_rows(
+                    shopee_results, lazada_result, qoo10_result, rates,
+                    ebay_results=ebay_results,
+                    joom_results=joom_results, shopify_results=shopify_results,
+                )
                 if make_zero:
                     zero_mode_arg = "all" if zero_doc_mode == "전체" else "monthly"
                     zero_files = create_zero_rate_attachments(
@@ -705,7 +790,15 @@ with st.expander("📌 파일명 규칙 안내"):
 | `라자다_*.pdf` | 라자다 소포수령증 |
 | `라자다_*.xlsx` | 라자다 주문내역 (`paidPrice`/`deliveredDate`) |
 | `큐텐재팬_*.pdf` | 큐텐재팬 — PDF 자동인식 후 STEP 2에 반영 |
+| `이베이_*.pdf` / `린코스_*.pdf` | 린코스(주) 소포수령증 — 발행월별 다통화 |
+| `*.pdf` (본문에 `H3 NETWORKS`) | Joom — 에이치3네트웍스 상품 수령 및 운송 확인증 |
+| `<스토어> orders *.csv` | 쇼피파이 주문내역 (`Fulfilled at`/`Total`) |
 
-참고: 쇼피는 업체명과 무관하게 `_MY_`, `_PH_`, `_SG_`, `_TH_`, `_TW_`, `_VN_`, `_BR_`, `_MX_` 국가코드 패턴도 함께 인식합니다.
+참고
+- 쇼피는 업체명과 무관하게 `_MY_`, `_PH_`, `_SG_`, `_TH_`, `_TW_`, `_VN_`, `_BR_`, `_MX_` 국가코드 패턴도 함께 인식합니다.
+- Excel/CSV는 파일명이 아니라 **열 구성**으로 판별하므로 파일명을 바꿔도 됩니다.
+- 쇼피파이는 `transaction`, `payout` 파일이 아니라 **orders** 파일을 올려야 합니다.
+- 적용환율: 쇼피·라자다(주문내역)·Joom·쇼피파이는 **건별 기준일 일별환율**,
+  이베이(린코스)·큐텐재팬은 **공식 월평균 매매기준율** 입니다.
 """
     )

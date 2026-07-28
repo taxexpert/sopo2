@@ -115,7 +115,8 @@ def lazada_item_rate(item, currency, rates, result=None):
     )
 
 
-def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None):
+def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None,
+                  joom_results=None, shopify_results=None):
     for sd in shopee_results or []:
         sub = sd.get("submitter") or {}
         if sub.get("name"):
@@ -128,6 +129,14 @@ def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None
         sub = er.get("submitter") or {}
         if sub.get("name"):
             return sub.get("name")
+    for jr in joom_results or []:
+        sub = jr.get("submitter") or {}
+        if sub.get("name"):
+            return sub.get("name")
+    # 쇼피파이 orders export 에는 제출자 정보가 없어 스토어명을 사용합니다.
+    for sr in shopify_results or []:
+        if sr.get("store"):
+            return str(sr.get("store"))
     if qoo10_result:
         sub = qoo10_result.get("submitter") or {}
         if sub.get("name"):
@@ -135,7 +144,8 @@ def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None
     return "사업자명(사업자번호)"
 
 
-def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, ebay_results=None):
+def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, ebay_results=None,
+                           joom_results=None, shopify_results=None):
     """선택 문서 생성에 공통으로 쓰는 수출/영세율 행 목록 생성."""
     rows = []
 
@@ -211,6 +221,35 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                 "foreign": amount,
                 "krw": krw,
             })
+
+    # Joom / 쇼피파이: 건별 기준일(발송날짜 · Fulfilled at) 일별 매매기준율
+    for platform, issuer_default, results in (
+        ("Joom", "에이치3네트웍스", joom_results or []),
+        ("쇼피파이", "쇼피파이", shopify_results or []),
+    ):
+        for res in results:
+            for it in res.get("items", []):
+                cur = it.get("currency", "")
+                if not cur:
+                    continue
+                div = RATE_DIVISOR.get(cur, 1)
+                rate = applied_rate_value(cur, get_rate_for_date(rates.get(cur), it.get("date", "")))
+                amount = float(it.get("amount", 0) or 0)
+                krw = round(amount * rate / div)
+                ship_date = date_to_int(it.get("date", ""))
+                rows.append({
+                    "platform": platform,
+                    "issuer": it.get("carrier") or res.get("carrier") or issuer_default,
+                    "tracking_no": it.get("tracking_no", "") or it.get("order_name", "") or it.get("order_id", ""),
+                    "export_no": "",
+                    "other_count": 1,
+                    "ship_date": ship_date,
+                    "issue_date": ship_date,
+                    "currency": cur,
+                    "rate": rate,
+                    "foreign": amount,
+                    "krw": krw,
+                })
 
     if qoo10_result:
         q_entries = qoo10_result.get("entries") or [{
@@ -412,5 +451,7 @@ def create_zero_rate_attachments(
     return created
 
 
-def company_name_from_results(shopee_results, lazada_result=None, qoo10_result=None, ebay_results=None):
-    return _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results)
+def company_name_from_results(shopee_results, lazada_result=None, qoo10_result=None, ebay_results=None,
+                              joom_results=None, shopify_results=None):
+    return _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=ebay_results,
+                         joom_results=joom_results, shopify_results=shopify_results)
