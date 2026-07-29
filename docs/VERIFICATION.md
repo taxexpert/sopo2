@@ -66,3 +66,4 @@
 
 | 날짜 | 범위 | 결과 | 비고 |
 |---|---|---|---|
+| 2026-07-29 | A-1 전 플랫폼 (shopee·lazada·joom·shopify·lincos·qoo10) | 통과 | 쇼피 통화 판별 버그(MX→MXN 오계상) 수정 후 fixtures 기반 재실행. 쇼피 USD 4,023,647 신규 확정, 나머지 통화(MYR/PHP/SGD/THB/TWD/VND/BRL)와 타 플랫폼 전부 기존 기대값과 완전 일치 |

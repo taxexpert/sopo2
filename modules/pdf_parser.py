@@ -197,10 +197,22 @@ def parse_shopee_pdf(pdf_path: str) -> dict:
     write_match = re.search(r'작성일자\s+([\d-]+)', full_text)
     write_date = write_match.group(1) if write_match else ''
 
-    # 통화
-    currency_match = re.search(r'통화\s+([A-Z]{3})', full_text)
-    if currency_match:
-        currency = currency_match.group(1)
+    # 통화 — 2절 요약표 데이터 행에서 추출
+    #   예: "주)두라로지스틱스 MX 2025-10-01 ~ 2025-10-31 USD 82 1,020.10"
+    #   헤더 행은 "... 기간 통화 발송수량 ..." 이라 '통화' 뒤가 통화코드가 아닙니다.
+    #   그래서 '통화 XXX' 패턴에 의존하면 못 읽고, 기간 뒤의 코드를 봐야 합니다.
+    #   결제통화가 국가 통화와 다를 수 있어(예: MX인데 USD 정산) 국가코드
+    #   fallback은 데이터 행에서 아무것도 못 읽었을 때만 사용합니다.
+    row_currencies = re.findall(
+        r'~\s*\d{4}-\d{2}-\d{2}\s+([A-Z]{3})\s+[\d,]+\s+[\d,]+\.?\d*', full_text)
+    currency = ''
+    if row_currencies:
+        currency = max(set(row_currencies), key=row_currencies.count)
+    else:
+        currency_match = re.search(r'통화\s+([A-Z]{3})', full_text)
+        if currency_match:
+            currency = currency_match.group(1)
+    if currency:
         if not country:
             # 통화로 국가 역추적
             for cc, cur in COUNTRY_TO_CURRENCY.items():
