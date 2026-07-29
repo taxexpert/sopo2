@@ -23,3 +23,6 @@ config.yaml
 # 엑셀 임시 파일
 ~$*.xlsx
 ~$*.xlsm
+
+# 할일 파일
+TODO.md

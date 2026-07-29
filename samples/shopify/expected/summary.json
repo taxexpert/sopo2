@@ -50,5 +50,7 @@
       }
     }
   },
-  "expected_total_krw": 1704177
+  "expected_total_krw": 1704177,
+  "status": "confirmed",
+  "verified_against": "고객 수기 매출집계 '2. 매출집계(유월오렌지) (1).xlsx' 총 시트의 위하고 값 1,704,177과 일치"
 }

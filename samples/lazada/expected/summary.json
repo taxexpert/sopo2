@@ -7,32 +7,10 @@
   ],
   "expected": {
     "files": 1,
-    "by_currency": {
-      "MYR": {
-        "count": 1,
-        "qty": 3,
-        "fx": 474.14,
-        "krw": 170183
-      },
-      "PHP": {
-        "count": 1,
-        "qty": 29,
-        "fx": 19520.0,
-        "krw": 487024
-      },
-      "SGD": {
-        "count": 1,
-        "qty": 25,
-        "fx": 955.47,
-        "krw": 1087057
-      },
-      "VND": {
-        "count": 1,
-        "qty": 1,
-        "fx": 385000.0,
-        "krw": 21483
-      }
-    }
+    "by_currency": null,
+    "note": "코드 출력값(1,765,747)이었으나 외부 근거가 없어 비움. 확정숫자 수령 후 기입."
   },
-  "expected_total_krw": 1765747
+  "expected_total_krw": null,
+  "status": "draft",
+  "verified_against": null
 }

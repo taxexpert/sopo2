@@ -34,5 +34,7 @@
       }
     }
   },
-  "expected_total_krw": 19678074
+  "expected_total_krw": 19678074,
+  "status": "confirmed",
+  "verified_against": "기존 실무 산출물 '매출집계_1~3월.xlsx'(reference/ 보관)와 통화별 외화·원화 전체 일치. 건수 191은 PDF 요약표와도 일치"
 }

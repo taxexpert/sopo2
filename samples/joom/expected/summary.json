@@ -12,9 +12,12 @@
         "count": 15,
         "qty": 15,
         "fx": 254.83,
-        "krw": 381913
+        "krw": null
       }
-    }
+    },
+    "note": "krw는 코드 계산값(381,913)이었으나 외부 근거가 없어 비움. 담당자 확정 후 기입."
   },
-  "expected_total_krw": 381913
+  "expected_total_krw": null,
+  "status": "partially_confirmed",
+  "verified_against": "PDF 하단 인쇄 합계(조회기간 해외배송 합계 USD 254.83) — 외화·건수만 검증됨"
 }
