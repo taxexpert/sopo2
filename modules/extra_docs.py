@@ -99,7 +99,7 @@ def lazada_item_date(item, result=None):
     item = item or {}
     result = result or {}
     return (item.get("date") or item.get("delivered_date")
-            or result.get("write_date") or result.get("period_end") or "")
+            or result.get("period_end") or result.get("write_date") or "")
 
 
 def lazada_item_rate(item, currency, rates, result=None):
