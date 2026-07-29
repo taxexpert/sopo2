@@ -1,0 +1,23 @@
+{
+  "platform": "joom",
+  "case": "주식회사 케이팝피버 2026년 2분기",
+  "rate_basis": "daily (발송날짜)",
+  "status": "partially_confirmed",
+  "verified_against": "PDF 인쇄 합계(조회기간 해외배송 합계 USD 254.83)와 건별 합계 일치. 정답지 없음",
+  "source_files": [
+    "해외소포수령증-주식회사 케이팝피버.pdf"
+  ],
+  "expected": {
+    "files": 1,
+    "by_currency": {
+      "USD": {
+        "count": 15,
+        "qty": 15,
+        "fx": 254.83,
+        "krw": null
+      }
+    },
+    "note": "원화 정답지 없음. 참고: 앱 계산값 381,913 (발송날짜 일별환율 기준)."
+  },
+  "expected_total_krw": null
+}

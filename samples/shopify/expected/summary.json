@@ -1,7 +1,9 @@
 {
   "platform": "shopify",
-  "description": "쇼피파이 orders export (정지민 26년 자료)",
+  "case": "정지민(FRESORY·LILGO·PAVY) 2026년 1월",
   "rate_basis": "daily (Fulfilled at)",
+  "status": "confirmed",
+  "verified_against": "고객 수기본 '2. 매출집계(유월오렌지).xlsx' 총 시트 위하고 값 1,704,177과 일치",
   "source_files": [
     "FRESORY orders 26년.csv",
     "LILGO orders 26년.csv",
@@ -48,9 +50,8 @@
         "skipped_unfulfilled": 7,
         "skipped_blank": 0
       }
-    }
+    },
+    "note": "환불 2건(FRESORY #1015 부분 3 USD, PAVY #1011 전액 19.75 USD)은 미차감 상태 — 처리 방식 미결정."
   },
-  "expected_total_krw": 1704177,
-  "status": "confirmed",
-  "verified_against": "고객 수기 매출집계 '2. 매출집계(유월오렌지) (1).xlsx' 총 시트의 위하고 값 1,704,177과 일치"
+  "expected_total_krw": 1704177
 }

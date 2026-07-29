@@ -1,23 +1,23 @@
 {
   "platform": "joom",
-  "description": "Joom / 에이치3네트웍스 상품 수령 및 운송 확인증",
+  "case": "실덱스 2026년 2분기",
   "rate_basis": "daily (발송날짜)",
+  "status": "partially_confirmed",
+  "verified_against": "PDF 인쇄 합계(USD 214.02)·수기 정답지 외화와 일치. 원화는 아래 사유로 미확정",
   "source_files": [
-    "해외소포수령증-주식회사 케이팝피버 (1) (1).pdf"
+    "해외소포수령증-실덱스.pdf"
   ],
   "expected": {
     "files": 1,
     "by_currency": {
       "USD": {
-        "count": 15,
-        "qty": 15,
-        "fx": 254.83,
+        "count": 14,
+        "qty": 14,
+        "fx": 214.02,
         "krw": null
       }
     },
-    "note": "krw는 코드 계산값(381,913)이었으나 외부 근거가 없어 비움. 담당자 확정 후 기입."
+    "note": "앱 계산 324,212 vs 수기 정답지 324,198 — 차이 14원 전액 규명됨: (1) 정답지가 2026-04-06 환율을 다음 행(04-07, 1507.2)으로 오참조 (+7원, 실제 04-06=1507.6은 정답지 자체 환율표로 확인) (2) 정답지는 원단위 버림, 앱은 반올림 (+7원). 기존 앱 산출 정답지(쏭샵 등)는 모두 반올림과 일치하므로 반올림이 기존 관행. 확정 필요."
   },
-  "expected_total_krw": null,
-  "status": "partially_confirmed",
-  "verified_against": "PDF 하단 인쇄 합계(조회기간 해외배송 합계 USD 254.83) — 외화·건수만 검증됨"
+  "expected_total_krw": null
 }

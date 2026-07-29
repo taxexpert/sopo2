@@ -1,16 +1,98 @@
 {
-  "platform": "lazada",
-  "description": "라자다 / 용성종합물류 소포수령증 PDF",
-  "rate_basis": "period_average (거래기간 평균)",
+  "platform": "mixed(shopee+lazada+qoo10)",
+  "case": "수니네 2026년 상반기",
+  "rate_basis": "쇼피=일별 / 라자다Excel=deliveredDate 일별 / 큐텐=반기말(2026-06) 월평균 9.5038",
+  "status": "confirmed",
+  "verified_against": "정답지 '2. 매출집계(해외).xlsx' 총집계와 쇼피·라자다·큐텐 전 블록 외화·원화 일치",
   "source_files": [
-    "라자다_해외소포수령증_유엠(2025년 12월).pdf"
+    "라자다_베트남 1.xlsx",
+    "라자다_싱가포르 1.xlsx",
+    "라자다_태국 1.xlsx",
+    "수니네_BR_20260401-20260430.pdf",
+    "수니네_MY_20260101-20260531.pdf",
+    "수니네_PH_20260101-20260630.pdf",
+    "수니네_SG_20260101-20260531.pdf",
+    "수니네_TW_20260101-20260630.pdf",
+    "수니네_VN_20260101-20260630.pdf",
+    "큐텐(KSE)_해외소포수령증_26년 상반기.pdf"
   ],
   "expected": {
-    "files": 1,
-    "by_currency": null,
-    "note": "코드 출력값(1,765,747)이었으나 외부 근거가 없어 비움. 확정숫자 수령 후 기입."
+    "shopee": {
+      "files": 6,
+      "by_currency": {
+        "BRL": {
+          "count": 2,
+          "qty": 2,
+          "fx": 114.95,
+          "krw": 33838
+        },
+        "MYR": {
+          "count": 62,
+          "qty": 62,
+          "fx": 5862.74,
+          "krw": 2184216
+        },
+        "PHP": {
+          "count": 211,
+          "qty": 211,
+          "fx": 207352.0,
+          "krw": 5136633
+        },
+        "SGD": {
+          "count": 73,
+          "qty": 73,
+          "fx": 1672.46,
+          "krw": 1932795
+        },
+        "TWD": {
+          "count": 52,
+          "qty": 52,
+          "fx": 52278.97,
+          "krw": 2463131
+        },
+        "VND": {
+          "count": 279,
+          "qty": 279,
+          "fx": 116742803.0,
+          "krw": 6619129
+        }
+      }
+    },
+    "lazada": {
+      "files": 3,
+      "by_currency": {
+        "THB": {
+          "count": 86,
+          "qty": 86,
+          "fx": 47275.29,
+          "krw": 2184260
+        },
+        "VND": {
+          "count": 23,
+          "qty": 23,
+          "fx": 8087839.0,
+          "krw": 453357
+        },
+        "SGD": {
+          "count": 63,
+          "qty": 63,
+          "fx": 1242.86,
+          "krw": 1438312
+        }
+      },
+      "note": "라자다_태국 파일에 7월 배송분 3행(1006.6 THB)이 포함되어 있으나 상반기 신고 대상이 아니므로 정답지와 동일하게 제외한 값. ⚠️ 현재 앱은 신고기간 필터가 없어 전량 포함(THB 2,230,548)으로 계산됨 — 미결정 사항."
+    },
+    "qoo10": {
+      "files": 1,
+      "by_currency": {
+        "JPY": {
+          "count": 1,
+          "qty": 113,
+          "fx": 321340.0,
+          "krw": 3053951
+        }
+      }
+    }
   },
-  "expected_total_krw": null,
-  "status": "draft",
-  "verified_against": null
+  "expected_total_krw": 25499622
 }

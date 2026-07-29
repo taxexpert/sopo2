@@ -1,25 +1,22 @@
 {
   "platform": "qoo10",
-  "description": "큐텐재팬 / 국제로지스틱 소포수령증",
-  "rate_basis": "monthly_average (반기말 6월/12월)",
+  "case": "라라블리 2026년 상반기",
+  "rate_basis": "monthly_average (반기말 2026-06 = 9.5038원/엔, SMBS 공식값 950.38/100엔 확인)",
+  "status": "confirmed",
+  "verified_against": "정답지 '2. 매출집계(해외).xlsx'와 건수·외화·환율·원화 일치. 건수·JPY는 PDF 기재값과도 일치, 환율은 SMBS 공식값과 일치",
   "source_files": [
-    "Qoo10 소포수령증 2025년 10월.pdf",
-    "Qoo10 소포수령증 2025년 11월.pdf",
-    "Qoo10 소포수령증 2025년 12월.pdf"
+    "14. 해외배송 소포수령증.pdf"
   ],
   "expected": {
-    "files": 3,
+    "files": 1,
     "by_currency": {
       "JPY": {
-        "count": 3,
-        "qty": 2084,
-        "fx": 10910526.0,
-        "krw": null
+        "count": 1,
+        "qty": 23,
+        "fx": 74170.0,
+        "krw": 704897
       }
-    },
-    "note": "krw는 코드 계산값(102,710,600 · 반기말 2025-12 월평균 9.4139 적용)이었으나 외부 근거가 없어 비움. 실제 신고 숫자 수령 후 기입."
+    }
   },
-  "expected_total_krw": null,
-  "status": "partially_confirmed",
-  "verified_against": "PDF 표 기재값(10월 497건 2,471,967 / 11월 592건 3,156,845 / 12월 995건 5,281,714 JPY) — 건수·외화만 검증됨"
+  "expected_total_krw": 704897
 }
