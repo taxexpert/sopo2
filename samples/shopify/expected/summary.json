@@ -3,7 +3,7 @@
   "case": "정지민(FRESORY·LILGO·PAVY) 2026년 1월",
   "rate_basis": "daily (Fulfilled at)",
   "status": "confirmed",
-  "verified_against": "고객 수기본 '2. 매출집계(유월오렌지).xlsx' 총 시트 위하고 값 1,704,177과 일치",
+  "verified_against": "고객 수기본 위하고 1,704,177 대비: 규칙 차이(refunded 1건 28,339원 차감)만 존재함을 건별 대조로 확인. 차감 전 값으로 재계산하면 수기본과 정확히 일치",
   "source_files": [
     "FRESORY orders 26년.csv",
     "LILGO orders 26년.csv",
@@ -13,10 +13,10 @@
     "files": 3,
     "by_currency": {
       "USD": {
-        "count": 22,
-        "qty": 22,
-        "fx": 1174.51,
-        "krw": 1704177
+        "count": 21,
+        "qty": 21,
+        "fx": 1154.76,
+        "krw": 1675838
       }
     },
     "by_store": {
@@ -27,8 +27,13 @@
           "fx": 342.14,
           "krw": 499824
         },
-        "skipped_unfulfilled": 2,
-        "skipped_blank": 1
+        "skipped_by_reason": {
+          "voided": {
+            "count": 2,
+            "fx": 186.66,
+            "currency": "USD"
+          }
+        }
       },
       "LILGO": {
         "USD": {
@@ -37,21 +42,36 @@
           "fx": 517.76,
           "krw": 746004
         },
-        "skipped_unfulfilled": 1,
-        "skipped_blank": 0
+        "skipped_by_reason": {
+          "voided": {
+            "count": 1,
+            "fx": 60.23,
+            "currency": "USD"
+          }
+        }
       },
       "PAVY": {
         "USD": {
-          "count": 11,
-          "qty": 11,
-          "fx": 314.61,
-          "krw": 458349
+          "count": 10,
+          "qty": 10,
+          "fx": 294.86,
+          "krw": 430010
         },
-        "skipped_unfulfilled": 7,
-        "skipped_blank": 0
+        "skipped_by_reason": {
+          "voided": {
+            "count": 7,
+            "fx": 297.44,
+            "currency": "USD"
+          },
+          "refunded": {
+            "count": 1,
+            "fx": 19.75,
+            "currency": "USD"
+          }
+        }
       }
     },
-    "note": "환불 2건(FRESORY #1015 부분 3 USD, PAVY #1011 전액 19.75 USD)은 미차감 상태 — 처리 방식 미결정."
+    "note": "환불 규칙(2026-07-29 결정) 반영: refunded 전액환불 미반영(PAVY #1011, 19.75 USD), partially_refunded 전액 반영(FRESORY #1015), voided/미배송 미반영·사유별 집계. 고객 수기본 위하고 값 1,704,177은 환불 미차감 기준이며, 규칙 적용 후 기준값은 1,675,838."
   },
-  "expected_total_krw": 1704177
+  "expected_total_krw": 1675838
 }

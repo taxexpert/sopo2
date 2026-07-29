@@ -716,10 +716,13 @@ if process_btn:
                         shopify_results.append(result)
                         totals = result.get("total_by_currency", {})
                         total_text = ", ".join(f"{amount:,.2f} {cur}" for cur, amount in totals.items())
-                        skipped = int(result.get("skipped_unfulfilled", 0) or 0)
+                        reasons = result.get("skipped_by_reason") or {}
+                        reason_text = ", ".join(
+                            f"{k} {v['count']}건" for k, v in sorted(reasons.items())
+                        )
                         log(f"[OK] 쇼피파이 {result.get('store','')}: {p.name} / "
                             f"{result.get('row_count', 0):,}건 / {total_text}"
-                            + (f" / 미배송·취소 {skipped:,}건 제외" if skipped else ""))
+                            + (f" / 미반영: {reason_text}" if reason_text else ""))
                         continue
                     if selected_type != "lazada_excel":
                         log(f"[WARN] 지원하지 않는 Excel/CSV 형식: {p.name}")

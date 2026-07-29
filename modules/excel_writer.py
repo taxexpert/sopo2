@@ -1219,11 +1219,17 @@ def write_shopify_sheet(ws, shopify_data: dict, rates: dict):
     _style(ws.cell(row=excel_row, column=krw_col), font=FONT_BOLD, fill=GRAY_FILL,
            align=RIGHT, border=THIN_BORDER, num_format=NUM_FMT)
 
-    skipped = int(shopify_data.get('skipped_unfulfilled', 0) or 0)
-    if skipped:
+    # 미반영 내역을 사유별로 표시합니다 (환불·취소 공통 정책).
+    reasons = shopify_data.get('skipped_by_reason') or {}
+    if reasons:
+        reason_labels = {'refunded': '전액환불(refunded)', 'voided': '취소(voided)', 'unfulfilled': '미배송'}
+        parts = [
+            f"{reason_labels.get(k, k)} {v['count']}건 ({v['fx']:,.2f} {v.get('currency', 'USD')})"
+            for k, v in sorted(reasons.items())
+        ]
         excel_row += 1
-        ws.cell(row=excel_row, column=1,
-                value=f'※ 미배송/취소(Fulfilled at 없음) {skipped}건은 매출에서 제외했습니다.')
+        ws.cell(row=excel_row, column=1, value='※ 매출 미반영: ' + ' · '.join(parts)
+                + '  — partially_refunded는 전액 반영')
         _style(ws.cell(row=excel_row, column=1), font=Font(name='맑은 고딕', size=9, color='C00000'))
 
 

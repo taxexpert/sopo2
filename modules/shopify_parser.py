@@ -7,9 +7,14 @@ Shopify 관리자에서 내려받은 `<스토어명> orders <기간>.csv` (또�
 매출 인식 규칙
 - 금액: `Total` 열 (상품가 + 배송비 + 세금)
 - 기준일: `Fulfilled at` 의 날짜 부분 → 이 날짜의 일별 매매기준율 적용
-- 제외: `Fulfilled at` 이 비어 있는 행(voided / unfulfilled)
 - 제외: 같은 주문의 2번째 이후 라인아이템 행(`Total` 이 비어 있음)
-- 환불(refunded / partially_refunded)도 `Total` 전액을 인식합니다.
+
+환불·취소 처리 규칙 (전 플랫폼 공통 정책)
+- partially_refunded → 반영 (`Total` 전액)
+- voided            → 미반영 (사유: voided)
+- refunded (전액환불) → 미반영 (사유: refunded)
+- 그 외 `Fulfilled at` 없음 → 미반영 (사유: unfulfilled)
+미반영 건은 사유별 건수·금액으로 집계해 `skipped_by_reason` 에 담습니다.
 """
 
 from __future__ import annotations
@@ -178,8 +183,14 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
     data_rows = []
     row_flags = []
     items = []
-    skipped_unfulfilled = 0
     skipped_blank = 0
+    # 미반영 주문을 사유별로 집계합니다: {사유: {'count': n, 'fx': 외화합계}}
+    skipped_by_reason = {}
+
+    def _skip(reason, amount, currency):
+        b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0, "currency": currency})
+        b["count"] += 1
+        b["fx"] = round(b["fx"] + float(amount or 0), 2)
 
     for raw_row in rows[header_row + 1:]:
         raw_row = list(raw_row or [])
@@ -218,12 +229,20 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         if not amount:
             # 같은 주문의 2번째 이후 라인아이템 행 — 금액이 비어 있어 매출이 아닙니다.
             skipped_blank += 1
-            row_flags.append({"index": row_index, "date": "", "counted": False})
+            row_flags.append({"index": row_index, "date": "", "counted": False, "reason": "blank"})
+            continue
+
+        status_key = status.strip().lower()
+        if status_key == "refunded":
+            # 전액환불 — 배송 여부와 무관하게 매출 미반영.
+            _skip("refunded", amount, currency)
+            row_flags.append({"index": row_index, "date": fulfilled_date, "counted": False, "reason": "refunded"})
             continue
         if not fulfilled_date:
-            # voided / unfulfilled — 배송이 이루어지지 않아 매출로 잡지 않습니다.
-            skipped_unfulfilled += 1
-            row_flags.append({"index": row_index, "date": "", "counted": False})
+            # 배송이 이루어지지 않은 건 — voided(취소)와 그 외(unfulfilled)를 구분해 집계합니다.
+            reason = "voided" if status_key == "voided" else "unfulfilled"
+            _skip(reason, amount, currency)
+            row_flags.append({"index": row_index, "date": "", "counted": False, "reason": reason})
             continue
 
         row_flags.append({"index": row_index, "date": fulfilled_date, "counted": True})
@@ -272,7 +291,9 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         "currencies": sorted(total_by_currency),
         "total_by_currency": total_by_currency,
         "row_count": len(items),
-        "skipped_unfulfilled": skipped_unfulfilled,
+        "skipped_by_reason": skipped_by_reason,
+        "skipped_unfulfilled": sum(v["count"] for k, v in skipped_by_reason.items()
+                                   if k in ("voided", "unfulfilled")),
         "skipped_blank": skipped_blank,
     }
 

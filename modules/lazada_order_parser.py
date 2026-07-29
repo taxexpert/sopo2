@@ -125,9 +125,22 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
     items = []
     skipped_no_date = 0
     skipped_no_amount = 0
+    # 환불·취소 공통 정책: 전액환불/반품/취소 상태는 매출 미반영, 사유별 집계.
+    skipped_by_reason = {}
+
+    def _skip(reason, amount):
+        b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0})
+        b["count"] += 1
+        b["fx"] = round(b["fx"] + float(amount or 0), 2)
+
     for row_no in range(header_row + 1, selected.max_row + 1):
         delivered_date = _date(value(row_no, "deliveredDate"))
         amount = _number(value(row_no, "paidPrice"))
+        status_key = _text(value(row_no, "status")).lower()
+        if any(k in status_key for k in ("refund", "return", "cancel")):
+            _skip(status_key or "canceled", amount)
+            skipped_no_date += 0  # 사유 집계에만 반영
+            continue
         if not delivered_date:
             skipped_no_date += 1
             continue
@@ -205,6 +218,7 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
         },
         "skipped_no_date": skipped_no_date,
         "skipped_no_amount": skipped_no_amount,
+        "skipped_by_reason": skipped_by_reason,
     }
 
 
