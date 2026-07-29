@@ -139,7 +139,6 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
         status_key = _text(value(row_no, "status")).lower()
         if any(k in status_key for k in ("refund", "return", "cancel")):
             _skip(status_key or "canceled", amount)
-            skipped_no_date += 0  # 사유 집계에만 반영
             continue
         if not delivered_date:
             skipped_no_date += 1
@@ -233,6 +232,10 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
     source_workbooks = []
     source_kinds = set()
     submitter = {}
+    # 파일별 미반영 사유 집계를 유실 없이 합칩니다 (조용한 제외 금지).
+    skipped_by_reason = {}
+    skipped_no_date = 0
+    skipped_no_amount = 0
     for result in valid:
         items.extend(result.get("items", []))
         source_files.extend(result.get("source_files", []))
@@ -242,6 +245,12 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
         sub = result.get("submitter") or {}
         if not submitter.get("name") and sub.get("name"):
             submitter = sub
+        skipped_no_date += int(result.get("skipped_no_date", 0) or 0)
+        skipped_no_amount += int(result.get("skipped_no_amount", 0) or 0)
+        for reason, data in (result.get("skipped_by_reason") or {}).items():
+            b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0})
+            b["count"] += int(data.get("count", 0) or 0)
+            b["fx"] = round(b["fx"] + float(data.get("fx", 0) or 0), 2)
 
     items.sort(key=lambda it: (
         it.get("date") or "9999-99-99",
@@ -268,4 +277,7 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
         "submitter": submitter,
         "items": items,
         "row_count": len(items),
+        "skipped_by_reason": skipped_by_reason,
+        "skipped_no_date": skipped_no_date,
+        "skipped_no_amount": skipped_no_amount,
     }

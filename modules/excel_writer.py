@@ -817,9 +817,22 @@ def _copy_lazada_source_workbooks(ws, source_workbooks: list) -> bool:
     return not first_sheet
 
 
+def _write_skipped_reason_note(ws, row, reasons, currency_hint=''):
+    """미반영 내역을 사유별로 시트 하단에 표시합니다 (조용한 제외 금지)."""
+    if not reasons:
+        return
+    parts = [
+        f"{k} {v['count']}건 ({v['fx']:,.2f}{(' ' + (v.get('currency') or currency_hint)) if (v.get('currency') or currency_hint) else ''})"
+        for k, v in sorted(reasons.items())
+    ]
+    cell = ws.cell(row=row, column=1, value='※ 매출 미반영: ' + ' · '.join(parts))
+    _style(cell, font=Font(name='맑은 고딕', size=9, color='C00000'))
+
+
 def write_lazada_order_sheet(ws, lazada_data: dict, rates: dict):
     """라자다 국가별 주문내역 Excel 원본을 양식 그대로 아래로 이어 붙입니다."""
     if _copy_lazada_source_workbooks(ws, lazada_data.get('source_workbooks', [])):
+        _write_skipped_reason_note(ws, ws.max_row + 2, lazada_data.get('skipped_by_reason'))
         return
 
     # 구버전 파싱 결과처럼 원본 파일 바이트가 없을 때만 기존 집계형 표를 사용합니다.

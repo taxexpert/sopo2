@@ -139,15 +139,21 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
             if is_shopify_orders_file(input_path):
                 result = parse_shopify_orders(input_path)
                 shopify_results.append(result)
+                reasons = result.get('skipped_by_reason') or {}
+                reason_text = ', '.join(f"{k} {v['count']}건" for k, v in sorted(reasons.items()))
                 print(f'     쇼피파이 {result.get("store","")} — {result.get("row_count", 0)}건 '
-                      f'/ {result.get("total_by_currency", {})}')
+                      f'/ {result.get("total_by_currency", {})}'
+                      + (f' / 미반영: {reason_text}' if reason_text else ''))
                 continue
             if input_path.suffix.lower() == '.csv':
                 print(f'     ⚠️  인식할 수 없는 CSV — {input_path.name}')
                 continue
             result = parse_lazada_order_excel(input_path)
             lazada_results.append(result)
-            print(f'     라자다 주문 Excel — {len(result.get("items", []))}건')
+            reasons = result.get('skipped_by_reason') or {}
+            reason_text = ', '.join(f"{k} {v['count']}건" for k, v in sorted(reasons.items()))
+            print(f'     라자다 주문 Excel — {len(result.get("items", []))}건'
+                  + (f' / 미반영: {reason_text}' if reason_text else ''))
             continue
         result = parse_pdf(str(input_path))
         if result is None:

@@ -731,7 +731,10 @@ if process_btn:
                     lazada_results.append(result)
                     totals = result.get("total_amount_by_currency", {})
                     total_text = ", ".join(f"{amount:,.2f} {cur}" for cur, amount in totals.items())
-                    log(f"[OK] 라자다 주문엑셀: {p.name} / {len(result.get('items', [])):,}건 / {total_text}")
+                    reasons = result.get("skipped_by_reason") or {}
+                    reason_text = ", ".join(f"{k} {v['count']}건" for k, v in sorted(reasons.items()))
+                    log(f"[OK] 라자다 주문엑셀: {p.name} / {len(result.get('items', [])):,}건 / {total_text}"
+                        + (f" / 미반영: {reason_text}" if reason_text else ""))
                     continue
 
                 detected_from_file = detect_pdf_type(str(p))
