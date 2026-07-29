@@ -86,11 +86,14 @@ def _applied_rate_value(currency: str, value) -> float:
 
 
 def _lazada_item_date(item: dict, lazada_result: dict = None, fallback: str = "") -> str:
-    """라자다 주문 Excel은 deliveredDate, 기존 PDF는 문서 기준일을 사용합니다."""
+    """라자다 주문 Excel은 deliveredDate, 기존 PDF는 거래기간 종료일을 사용합니다.
+
+    작성일자(write_date)는 익월일 수 있어 귀속월이 어긋나므로 최후순위로만 씁니다.
+    """
     item = item or {}
     lazada_result = lazada_result or {}
     return (item.get("date") or item.get("delivered_date") or fallback
-            or lazada_result.get("write_date") or lazada_result.get("period_end") or "")
+            or lazada_result.get("period_end") or lazada_result.get("write_date") or "")
 
 
 def _lazada_item_rate(item: dict, currency: str, rates: dict,
@@ -1725,7 +1728,7 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
     월별집계 시트 작성.
     기준일은 각 문서의 수출실적/통화 시트에 들어가는 선(기)적일자와 동일하게 봅니다.
     - 쇼피: 거래별 발행일(tx['date'])
-    - 라자다 주문 Excel: deliveredDate / 기존 PDF: 작성일자 또는 기간 종료일
+    - 라자다 주문 Excel: deliveredDate / 기존 PDF: 거래기간 종료일(없으면 작성일자)
     - 큐텐: 입력 건별 거래기간 종료일(상반기 6월 말/하반기 12월 말)
     """
     NUM = '#,##0'
@@ -1779,7 +1782,7 @@ def write_monthly_summary_sheet(ws, shopee_results: list, lazada_result: Optiona
 
     # 라자다: 주문 Excel은 deliveredDate 기준, 기존 PDF는 문서 기준일
     if lazada_result and lazada_result.get('items'):
-        fallback_date = lazada_write_date or lazada_result.get('write_date') or lazada_result.get('period_end') or ''
+        fallback_date = lazada_write_date or lazada_result.get('period_end') or lazada_result.get('write_date') or ''
         for it in lazada_result.get('items', []):
             cur = it.get('currency', '')
             if not cur:
@@ -1951,10 +1954,10 @@ def generate_excel(
     ebay_currencies = usage.get('ebay_currencies', [])
     used_currencies = usage['used_currencies']
 
-    # ── 라자다 발행일 추출 (write_date → period_end fallback) ──
+    # ── 라자다 기준일 추출 (period_end → write_date fallback: 귀속월 유지) ──
     if lazada_result:
-        lazada_write_date = (lazada_result.get('write_date', '')
-                             or lazada_result.get('period_end', ''))
+        lazada_write_date = (lazada_result.get('period_end', '')
+                             or lazada_result.get('write_date', ''))
     else:
         lazada_write_date = ''
 
