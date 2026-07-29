@@ -186,10 +186,14 @@
   헤더/데이터 행이 자동으로 밀립니다.
 * `JPY` 시트는 큐텐 전용이라 `generate_excel()` 안에서 따로 작성하며 헤더가 **4행** 입니다.
   다른 통화 시트(6행 헤더)와 위치가 다르니 데이터를 복사할 때 주의하세요.
-* 서울외국환중개 월평균 페이지는 일부 구간(예: 2025-10~12)에서 조회 결과를 돌려주지 않는 경우가
-  확인됐습니다. 이때는 `RuntimeError` 로 중단되며, **일별 환율 평균으로 대체하지 않습니다.**
-  잠시 후 재시도하거나 `data/monthly_exchange_rate_cache.csv` 에 공식값을
+* 월평균 매매기준율을 못 얻으면 `RuntimeError` 로 중단되며, **일별 환율 평균으로 대체하지
+  않습니다.** 재시도하거나 `data/monthly_exchange_rate_cache.csv` 에 공식값을
   `source=SMBS_MON_AVG_OFFICIAL` 로 넣어야 합니다.
+* **큐텐만 환율 예외**: 다른 플랫폼과 달리 반기말(6월/12월)에 환율을 모아 적용합니다.
+  월 단위 큐텐 PDF(예: 10월분)도 선적일자는 그 달 말일이지만 **환율은 반기말 월평균**입니다.
+  이 규칙은 세 곳이 같은 답을 내야 합니다 — `app.py::_qoo10_reporting_month`(수집),
+  `excel_writer.py::_qoo10_reporting_month`(조회), `extra_docs.build_declaration_rows`(신고행).
+  한쪽만 바꾸면 '수집은 12월, 조회는 10월'로 어긋나 `RuntimeError` 가 납니다.
 * 큐텐 이미지 PDF OCR은 `pdf2image` + `pytesseract` + poppler/tesseract 바이너리가 있어야 동작합니다.
   없으면 STEP 2 수동 입력으로 처리합니다.
 * SMBS 사이트가 requests 로 막히면 Selenium(Chromium) 폴백을 씁니다. 컨테이너에 브라우저가 없으면 실패합니다.

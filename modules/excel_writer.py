@@ -1689,11 +1689,18 @@ def _qoo10_reporting_date(entry=None, result=None):
     return ''
 
 def _qoo10_reporting_month(entry=None, result=None):
-    """큐텐 거래기간 기준 반기말 월(YYYY-06 또는 YYYY-12)을 반환합니다."""
+    """큐텐 거래기간 기준 반기말 월(YYYY-06 또는 YYYY-12)을 반환합니다.
+
+    큐텐만 예외적으로 반기말에 환율을 모아 적용하므로, 신고 기준일이
+    10월이어도 환율 조회월은 12월(하반기말)입니다. app.py의 수집 로직과
+    같은 월을 돌려줘야 '수집은 12월, 조회는 10월'로 어긋나지 않습니다.
+    """
     report_date = _qoo10_reporting_date(entry, result)
     digits = re.sub(r"\D", "", str(report_date or ""))[:8]
     if len(digits) >= 6:
-        return f"{digits[:4]}-{digits[4:6]}"
+        year = digits[:4]
+        month = int(digits[4:6])
+        return f"{year}-06" if month <= 6 else f"{year}-12"
     return ""
 
 

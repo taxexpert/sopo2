@@ -1,0 +1,38 @@
+{
+  "platform": "lazada",
+  "description": "라자다 / 용성종합물류 소포수령증 PDF",
+  "rate_basis": "period_average (거래기간 평균)",
+  "source_files": [
+    "라자다_해외소포수령증_유엠(2025년 12월).pdf"
+  ],
+  "expected": {
+    "files": 1,
+    "by_currency": {
+      "MYR": {
+        "count": 1,
+        "qty": 3,
+        "fx": 474.14,
+        "krw": 170183
+      },
+      "PHP": {
+        "count": 1,
+        "qty": 29,
+        "fx": 19520.0,
+        "krw": 487024
+      },
+      "SGD": {
+        "count": 1,
+        "qty": 25,
+        "fx": 955.47,
+        "krw": 1087057
+      },
+      "VND": {
+        "count": 1,
+        "qty": 1,
+        "fx": 385000.0,
+        "krw": 21483
+      }
+    }
+  },
+  "expected_total_krw": 1765747
+}

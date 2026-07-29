@@ -1,0 +1,54 @@
+{
+  "platform": "shopify",
+  "description": "쇼피파이 orders export (정지민 26년 자료)",
+  "rate_basis": "daily (Fulfilled at)",
+  "source_files": [
+    "FRESORY orders 26년.csv",
+    "LILGO orders 26년.csv",
+    "PAVY orders 26년.csv"
+  ],
+  "expected": {
+    "files": 3,
+    "by_currency": {
+      "USD": {
+        "count": 22,
+        "qty": 22,
+        "fx": 1174.51,
+        "krw": 1704177
+      }
+    },
+    "by_store": {
+      "FRESORY": {
+        "USD": {
+          "count": 6,
+          "qty": 6,
+          "fx": 342.14,
+          "krw": 499824
+        },
+        "skipped_unfulfilled": 2,
+        "skipped_blank": 1
+      },
+      "LILGO": {
+        "USD": {
+          "count": 5,
+          "qty": 5,
+          "fx": 517.76,
+          "krw": 746004
+        },
+        "skipped_unfulfilled": 1,
+        "skipped_blank": 0
+      },
+      "PAVY": {
+        "USD": {
+          "count": 11,
+          "qty": 11,
+          "fx": 314.61,
+          "krw": 458349
+        },
+        "skipped_unfulfilled": 7,
+        "skipped_blank": 0
+      }
+    }
+  },
+  "expected_total_krw": 1704177
+}

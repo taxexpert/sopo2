@@ -1,0 +1,23 @@
+{
+  "platform": "qoo10",
+  "description": "큐텐재팬 / 국제로지스틱 소포수령증",
+  "rate_basis": "monthly_average (반기말 6월/12월)",
+  "source_files": [
+    "Qoo10 소포수령증 2025년 10월.pdf",
+    "Qoo10 소포수령증 2025년 11월.pdf",
+    "Qoo10 소포수령증 2025년 12월.pdf"
+  ],
+  "expected": {
+    "files": 3,
+    "by_currency": {
+      "JPY": {
+        "count": 3,
+        "qty": 2084,
+        "fx": 10910526.0,
+        "krw": 102710600
+      }
+    },
+    "note": "3개 PDF 모두 2025년 하반기 → 반기말(2025-12) 공식 월평균 9.4139원/엔 적용"
+  },
+  "expected_total_krw": 102710600
+}

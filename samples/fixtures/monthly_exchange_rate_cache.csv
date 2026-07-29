@@ -1,0 +1,13 @@
+﻿currency,year_month,rate,source,source_url,fetched_at
+CAD,2025-01,1011.82,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:00
+CAD,2025-02,1010.78,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:00
+CAD,2025-03,1015.27,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:00
+EUR,2025-01,1504.11,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:06
+EUR,2025-02,1505.44,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:06
+EUR,2025-03,1575.91,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:06
+GBP,2025-01,1795.49,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:12
+GBP,2025-02,1811.97,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:12
+GBP,2025-03,1882.12,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:01:12
+USD,2025-01,1455.79,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:00:54
+USD,2025-02,1445.56,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:00:54
+USD,2025-03,1456.95,SMBS_MON_AVG_OFFICIAL,http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp,2026-07-28T17:00:54

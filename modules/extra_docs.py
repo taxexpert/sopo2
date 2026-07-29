@@ -263,7 +263,12 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
         for e in q_entries:
             report_date = qoo10_reporting_date(e, qoo10_result)
             report_digits = re.sub(r"\D", "", str(report_date or ""))[:8]
-            report_month = f"{report_digits[:4]}-{report_digits[4:6]}" if len(report_digits) >= 6 else ""
+            # 큐텐만 예외: 환율 조회월은 기준일이 속한 반기의 말월(6월/12월)입니다.
+            if len(report_digits) >= 6:
+                report_month = (f"{report_digits[:4]}-06" if int(report_digits[4:6]) <= 6
+                                else f"{report_digits[:4]}-12")
+            else:
+                report_month = ""
             rate = applied_rate_value("JPY", monthly_avg_rate_for_month(rates.get("JPY"), report_month))
             amount = float(e.get("amount", 0) or 0)
             krw = round(amount * rate)

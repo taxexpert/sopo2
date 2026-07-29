@@ -1163,7 +1163,9 @@ def parse_month_avg_table_from_html(html, currency):
                 if not re.search(rf"\b{re.escape(currency)}\b", row_text, flags=re.I):
                     continue
 
-                month_match = re.search(r"(20\d{2})[.\-/년\s]+(0?[1-9]|1[0-2])", texts[0])
+                # 두 자리 월(10~12)을 먼저 시도해야 합니다. 1[0-2]를 뒤에 두면
+                # "2025.10"에서 0?[1-9]가 "1"만 잡아 10·11·12월이 모두 1월로 읽힙니다.
+                month_match = re.search(r"(20\d{2})[.\-/년\s]+(1[0-2]|0?[1-9])", texts[0])
                 if not month_match:
                     continue
                 month_key = f"{int(month_match.group(1)):04d}-{int(month_match.group(2)):02d}"

@@ -2,14 +2,19 @@ __pycache__/
 *.py[cod]
 
 # 실행 중 생성되는 환율 캐시 / 입출력 폴더
-data/
-input/
-output/
-logs/
+# 앞의 /는 최상위 폴더만 지정합니다. 붙이지 않으면 samples/<플랫폼>/input/ 까지 함께 제외됩니다.
+/data/
+/input/
+/output/
+/logs/
 
-# 회귀 검증용 예시 자료 — 고객 실자료(사업자번호·구매자 개인정보) 포함
-# 구조 설명은 samples/README.md 참고. 새 PC에서는 폴더를 따로 전달받을 것.
-samples/
+# 회귀 검증용 예시 자료
+#   구조(README·폴더·expected/*.json·fixtures)는 저장소에 올립니다.
+#   실제 고객 파일(사업자번호·구매자 개인정보 포함)만 제외합니다.
+samples/*/input/*
+samples/*/reference/*
+!samples/*/input/.gitkeep
+!samples/*/reference/.gitkeep
 
 # 로컬 설정
 .streamlit/secrets.toml
