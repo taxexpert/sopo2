@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import io
 import os
 import hashlib
@@ -65,6 +66,171 @@ ALLOWED_EMAILS = [
 
 st.set_page_config(page_title="소포수령증 자동화", page_icon="📦", layout="centered")
 
+# 로그인 화면과 본 화면이 같은 스타일을 쓰도록 인증 처리보다 먼저 주입합니다.
+# 화면 언어는 세무 서식을 따릅니다. 구획은 괘선으로 나누고, 강조색은 번호·기본동작에만 씁니다.
+st.markdown(
+    """
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
+
+/* 색은 엑스퍼트 로고에서 가져온 두 가지뿐입니다.
+   브랜드 블루가 강조를 맡고 하늘색이 보조로 받칩니다. 중성색도 회색 대신 파랑 기미를 둡니다. */
+:root {
+    --ink:#0f1d30; --ink-soft:#55627a; --line:#d8e4f5;
+    /* 하늘색은 로고에선 파란 바탕 위라 밝아도 읽히지만, 흰 바탕에선 한 단계 내려야 보입니다. */
+    --accent:#1069f5; --sky:#0e9ad4; --surface:#f2f7fe; --surface-tint:#e6f0fd;
+    /* 채워진 버튼은 배경·글자를 따로 둡니다. 강조색을 그대로 배경에 쓰면 어두운 테마에서 대비가 깨집니다. */
+    --accent-solid:#1069f5; --accent-hover:#0b57d0; --on-accent:#ffffff;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ink:#e6edf8; --ink-soft:#93a1ba; --line:#27354a;
+        --accent:#5c9dff; --sky:#7bd8f7; --surface:#131c28; --surface-tint:#182437;
+        --accent-solid:#5c9dff; --accent-hover:#8ab8ff; --on-accent:#08111f;
+    }
+}
+
+/* 한글 본문용 서체. CDN이 막히면 OS 기본 한글 서체로 되돌아갑니다.
+   Streamlit 아이콘(Material Symbols)은 제외해야 글리프가 글자로 깨지지 않습니다. */
+.stApp, .stApp p, .stApp li, .stApp td, .stApp th, .stApp label,
+.stApp h1, .stApp h2, .stApp h3, .stApp h4,
+.stApp button, .stApp input, .stApp textarea, .stApp select {
+    font-family:'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+        'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', Roboto, sans-serif;
+}
+.stApp [class*="material-symbols"], .stApp [data-testid="stIconMaterial"] {
+    font-family:'Material Symbols Rounded' !important;
+}
+
+/* ── 문서 머리 ── */
+.doc-head { margin:0.25rem 0 1.6rem; }
+.doc-head__brand { display:flex; align-items:center; gap:0.7rem; }
+/* 로고의 2톤 구성을 그대로 따릅니다. 몸통은 브랜드 블루, 봉함 띠는 하늘색. */
+.doc-head__mark { flex:none; width:34px; height:34px; color:var(--accent); }
+.doc-head__mark .mark-tape { stroke:var(--sky); }
+.doc-head h1.doc-head__title { font-size:1.85rem; font-weight:700; letter-spacing:-0.015em;
+    line-height:1.2; color:var(--ink); margin:0; padding:0; }
+.doc-head p.doc-head__sub { font-size:0.95rem; line-height:1.6; color:var(--ink-soft);
+    margin:0.6rem 0 0; max-width:60ch; }
+
+/* ── 단계 구획 ── */
+.step { display:flex; align-items:baseline; gap:0.7rem;
+    border-top:1px solid var(--line); padding-top:1.9rem; margin-bottom:0.7rem; }
+.step--lead { border-top:0; padding-top:0; }
+.step__no { flex:none; font-size:1.05rem; font-weight:700; color:var(--accent);
+    font-variant-numeric:tabular-nums; line-height:1.3; }
+.step__rule { flex:none; width:1px; align-self:stretch; background:var(--line); }
+.step h2.step__title { font-size:1.12rem; font-weight:650; letter-spacing:-0.01em;
+    line-height:1.3; color:var(--ink); margin:0; padding:0; }
+
+/* ── 안내문 ── */
+.note { border:1px solid var(--line); border-radius:6px; background:var(--surface);
+    padding:0.7rem 0.9rem; font-size:0.875rem; line-height:1.6; color:var(--ink-soft);
+    margin:0.2rem 0 0.6rem; }
+
+/* ── 업로드 파일 목록 ── */
+.file-row { display:flex; align-items:center; gap:0.5rem; padding:0.3rem 0; min-width:0; }
+.file-row__name { font-size:0.875rem; color:var(--ink); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+/* 판별에 성공한 파일은 브랜드 블루, 못 한 파일은 앰버로 한눈에 갈립니다. */
+.file-row__tag { flex:none; font-size:0.75rem; line-height:1; color:var(--accent);
+    background:var(--surface-tint); border:1px solid var(--line); border-radius:4px;
+    padding:0.25rem 0.4rem; white-space:nowrap; }
+.file-row__tag--unknown { color:#b45309; background:#fdf5e7; border-color:#f0c98a; }
+
+.log-box { background:#0b1020; color:#e7edf8; border-radius:8px; padding:1rem;
+    font-family:'JetBrains Mono', Consolas, monospace; font-size:0.85rem;
+    max-height:320px; overflow:auto; white-space:pre-wrap; }
+div[data-testid="stColumn"] .stButton > button { white-space:nowrap !important; }
+
+/* 기본 동작 버튼은 Streamlit 기본 빨강 대신 문서 강조색을 씁니다. */
+.stApp .stButton button[kind="primary"]:not(:disabled),
+.stApp .stFormSubmitButton button[kind="primary"]:not(:disabled),
+.stApp button[data-testid="baseButton-primary"]:not(:disabled) {
+    background-color:var(--accent-solid); border-color:var(--accent-solid);
+    color:var(--on-accent);
+}
+/* 조건이 갖춰지기 전에는 눌러도 소용없다는 것이 색으로 먼저 보여야 합니다. */
+.stApp .stButton button[kind="primary"]:disabled,
+.stApp .stFormSubmitButton button[kind="primary"]:disabled,
+.stApp button[data-testid="baseButton-primary"]:disabled {
+    background-color:var(--surface); border-color:var(--line);
+    color:var(--ink-soft); opacity:1;
+}
+.stApp .stButton button[kind="primary"]:hover:not(:disabled),
+.stApp .stFormSubmitButton button[kind="primary"]:hover:not(:disabled) {
+    background-color:var(--accent-hover); border-color:var(--accent-hover);
+    color:var(--on-accent);
+}
+
+/* ── 저장소 바로가기 ── */
+/* Streamlit의 링크 색 규칙을 넘어서야 하므로 선택자를 조이고 !important를 함께 씁니다. */
+.stApp a.repo-link { position:fixed; right:1.5rem; bottom:3.25rem; z-index:999;
+    width:44px; height:44px; border-radius:50%;
+    display:inline-flex; align-items:center; justify-content:center;
+    border:1px solid var(--line) !important; background:var(--surface);
+    color:var(--ink-soft) !important; text-decoration:none !important; }
+.stApp a.repo-link:hover { color:var(--ink) !important; border-color:var(--ink-soft) !important; }
+.stApp a.repo-link:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.stApp a.repo-link svg { width:19px; height:19px; fill:currentColor; }
+
+@media (max-width:640px) {
+    .doc-head h1.doc-head__title { font-size:1.55rem; }
+    .doc-head__mark { width:30px; height:30px; }
+    .stApp a.repo-link { right:1rem; bottom:1rem; }
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# 소포 마크와 저장소 링크는 로그인 화면·본 화면에서 함께 씁니다.
+PARCEL_MARK = (
+    '<svg class="doc-head__mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" '
+    'stroke-width="1.7" stroke-linejoin="round" aria-hidden="true">'
+    '<rect x="4.5" y="8.5" width="23" height="19" rx="2"/>'
+    '<path class="mark-tape" d="M4.5 14.75H27.5"/>'
+    '<path class="mark-tape" d="M16 8.5V27.5"/></svg>'
+)
+REPO_LINK = (
+    '<a class="repo-link" href="https://github.com/taxexpert/sopo" target="_blank" '
+    'rel="noopener noreferrer" title="GitHub 저장소" aria-label="GitHub 저장소 열기">'
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 '
+    '2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94'
+    '-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 '
+    '2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36'
+    '-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 '
+    '2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54'
+    '.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>'
+    '</svg></a>'
+)
+
+
+def doc_head(subtitle: str) -> None:
+    """제품명·소포 마크·한 줄 설명으로 구성된 문서 머리를 그립니다."""
+    st.markdown(
+        f'<header class="doc-head">'
+        f'<div class="doc-head__brand">{PARCEL_MARK}'
+        f'<h1 class="doc-head__title">소포수령증 자동화</h1></div>'
+        f'<p class="doc-head__sub">{subtitle}</p></header>',
+        unsafe_allow_html=True,
+    )
+
+
+def step_head(no: int, title: str, lead: bool = False) -> None:
+    """번호·세로 괘선·제목으로 이루어진 단계 머리를 그립니다."""
+    st.markdown(
+        f'<div class="step{" step--lead" if lead else ""}">'
+        f'<span class="step__no">{no}</span><span class="step__rule"></span>'
+        f'<h2 class="step__title">{title}</h2></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def note(text: str) -> None:
+    """괘선 상자로 감싼 보조 안내문을 그립니다."""
+    st.markdown(f'<div class="note">{text}</div>', unsafe_allow_html=True)
+
 _AUTH_ENABLED = False
 try:
     _AUTH_ENABLED = "auth" in st.secrets
@@ -78,48 +244,30 @@ if _AUTH_ENABLED:
         st.error(f"로그인 상태 확인 오류: {type(e).__name__}: {e}")
         st.stop()
     if not _logged_in:
-        st.markdown(
-            """
-            <div style="text-align:center; padding:3rem 1rem;">
-                <p style="font-size:2rem; font-weight:700; color:#1f4e79;">📦 소포수령증 자동화</p>
-                <p style="color:#555; margin-bottom:1.5rem;">사용하려면 Google 계정으로 로그인하세요.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div style="height:3rem"></div>', unsafe_allow_html=True)
+        doc_head("업무용 계정으로 로그인하면 이어서 진행할 수 있습니다.")
         c1, c2, c3 = st.columns([1, 1.4, 1])
         with c2:
-            st.button("🔓 Google 계정으로 로그인", type="primary", on_click=st.login, use_container_width=True)
+            st.button("Google 계정으로 로그인", type="primary", on_click=st.login, use_container_width=True)
+        st.markdown(REPO_LINK, unsafe_allow_html=True)
         st.stop()
     _user_email = st.user.get("email", "")
     if ALLOWED_EMAILS and _user_email not in ALLOWED_EMAILS:
-        st.error(f"❌ 접근 권한이 없습니다. ({_user_email})")
+        st.error(f"접근 권한이 없는 계정입니다. ({_user_email})")
         if st.button("로그아웃"):
             st.logout()
         st.stop()
     with st.sidebar:
-        st.markdown(f"**👤 {st.user.get('name','') or _user_email}**")
+        st.markdown(f"**{st.user.get('name','') or _user_email}**")
         st.caption(_user_email)
         if st.button("로그아웃"):
             st.logout()
 
-st.markdown(
-    """
-<style>
-.main-title { font-size:2rem; font-weight:700; color:#1f4e79; margin-bottom:0.2rem; }
-.sub-title  { font-size:1rem; color:#555; margin-bottom:1.5rem; }
-.warn-box   { background:#fff8e1; border-radius:8px; padding:0.8rem 1.2rem; border-left:4px solid #f9a825; margin-bottom:0.5rem; }
-.info-box   { background:#e3f2fd; border-radius:8px; padding:0.8rem 1.2rem; border-left:4px solid #1565c0; margin-bottom:0.5rem; }
-.log-box    { background:#0b1020; color:#e7edf8; border-radius:10px; padding:1rem; font-family:Consolas, monospace; font-size:0.85rem; max-height:320px; overflow:auto; white-space:pre-wrap; }
-div[data-testid="stColumn"] .stButton > button { white-space: nowrap !important; }
-</style>
-""",
-    unsafe_allow_html=True,
+doc_head(
+    "수령증 PDF와 주문내역을 올리면 매출집계·영세율첨부서류제출명세서·수출실적명세서를 "
+    "매매기준율까지 적용해 한 번에 만듭니다."
 )
-
-st.markdown('<p class="main-title">📦 소포수령증 자동화</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">기존 GitHub 방식의 PDF 파싱·엑셀 생성을 유지하고, 환율은 서울외국환중개에서 자동 수집합니다.</p>', unsafe_allow_html=True)
-st.divider()
+st.markdown(REPO_LINK, unsafe_allow_html=True)
 
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
@@ -141,11 +289,6 @@ UNKNOWN_PDF_TYPE_TO_CODE = {
     "Joom": "joom",
 }
 
-FILE_TYPE_ICONS = {
-    "shopee": "🛍️", "lazada": "🟠", "lazada_excel": "🟠",
-    "qoo10": "🇯🇵", "ebay": "🛒", "joom": "🌍",
-    "shopify": "🛒", "unknown": "❓", "unknown_excel": "❓", "unknown_csv": "❓",
-}
 FILE_TYPE_LABELS = {
     "shopee": "쇼피", "lazada": "라자다", "lazada_excel": "라자다 주문내역",
     "qoo10": "큐텐재팬", "ebay": "이베이/린코스", "joom": "Joom",
@@ -156,10 +299,10 @@ FILE_TYPE_LABELS = {
 # ══════════════════════════════════════════════════════════════════
 # STEP 1 — PDF / Excel 업로드
 # ══════════════════════════════════════════════════════════════════
-st.markdown("### 📄 STEP 1 — 소포수령증 PDF / 주문내역 Excel·CSV 업로드")
+step_head(1, "수령증·주문내역 올리기", lead=True)
 c_desc, c_reset = st.columns([6, 1])
 c_desc.caption("쇼피·라자다·큐텐재팬·이베이(린코스)·Joom PDF와 라자다 주문내역 Excel, 쇼피파이 orders CSV를 한꺼번에 올려주세요.")
-if c_reset.button("🔄 초기화"):
+if c_reset.button("초기화"):
     st.session_state.uploader_key += 1
     st.session_state.qoo10_entries = []
     st.session_state.result_files = []
@@ -206,10 +349,15 @@ if uploaded_files:
     for i, f in enumerate(uploaded_files):
         payload = f.getvalue()
         ptype = _detect_uploaded_file_type(f.name, payload)
-        icon = FILE_TYPE_ICONS.get(ptype, "📄")
-        label = FILE_TYPE_LABELS.get(ptype, "")
+        label = FILE_TYPE_LABELS.get(ptype, "판별 중")
+        tag_mod = " file-row__tag--unknown" if ptype.startswith("unknown") else ""
         target_col = cols[i % 2]
-        target_col.markdown(f"{icon} `{f.name}` — {label}")
+        target_col.markdown(
+            f'<div class="file-row"><span class="file-row__name" title="{html.escape(f.name, quote=True)}">'
+            f'{html.escape(f.name)}</span>'
+            f'<span class="file-row__tag{tag_mod}">{html.escape(label)}</span></div>',
+            unsafe_allow_html=True,
+        )
         if ptype == "unknown":
             selected_label = target_col.selectbox(
                 "문서 종류",
@@ -274,16 +422,11 @@ if uploaded_files:
             "_submitter": result.get("submitter") or {},
         })
 
-st.divider()
-
 # ══════════════════════════════════════════════════════════════════
 # STEP 2 — 큐텐재팬 정보 입력
 # ══════════════════════════════════════════════════════════════════
-st.markdown("### 🇯🇵 STEP 2 — 큐텐재팬 정보 입력")
-st.markdown(
-    '<div class="warn-box">큐텐재팬 PDF를 업로드하면 아래 입력 목록에 자동 반영됩니다. 필요한 경우 직접 추가할 수도 있습니다.</div>',
-    unsafe_allow_html=True,
-)
+step_head(2, "큐텐재팬 정보 확인")
+note("큐텐재팬 PDF를 올리면 아래 목록에 자동으로 채워집니다. 빠진 건은 직접 추가해주세요.")
 
 def _fmt_date(v: str) -> str:
     d = re.sub(r"\D", "", str(v or ""))
@@ -300,7 +443,7 @@ with st.form("qoo10_add_form", clear_on_submit=True):
     in_qty = fc2.number_input("건수", min_value=0, value=0, format="%d")
     in_track = fc3.text_input("발송번호", placeholder="예: K2512244647017")
     in_wdate = fc4.text_input("발행일", placeholder="예: 20260205")
-    added = st.form_submit_button("➕ 추가", use_container_width=True)
+    added = st.form_submit_button("목록에 추가", use_container_width=True)
 
 if added:
     if in_amount > 0 or in_qty > 0 or in_track.strip():
@@ -332,18 +475,16 @@ if st.session_state.qoo10_entries:
     total_amt = sum(e["amount"] for e in st.session_state.qoo10_entries)
     total_qty = sum(e["qty"] for e in st.session_state.qoo10_entries)
     st.caption(f"합계: {len(st.session_state.qoo10_entries)}건 / 수량 {int(total_qty):,} / 금액 {int(total_amt):,} JPY")
-    if st.button("🗑️ 큐텐 입력 전체 삭제"):
+    if st.button("목록 전체 지우기"):
         st.session_state.qoo10_entries = []
         st.rerun()
 else:
     st.caption("아직 추가된 큐텐재팬 건이 없습니다.")
 
-st.divider()
-
 # ══════════════════════════════════════════════════════════════════
 # STEP 3 — 생성 문서 선택 및 환율 안내
 # ══════════════════════════════════════════════════════════════════
-st.markdown("### ✅ STEP 3 — 생성할 문서 선택")
+step_head(3, "만들 문서 고르기")
 cc1, cc2, cc3 = st.columns(3)
 make_sales = cc1.checkbox("매출집계", value=True)
 make_zero = cc2.checkbox("영세율첨부서류제출명세서", value=True)
@@ -358,20 +499,15 @@ if make_zero:
         help="전체를 선택하면 전체 통합 파일 1개만, 월별을 선택하면 월별 파일만 생성합니다.",
     )
 
-st.markdown(
-    '<div class="info-box">환율은 서울외국환중개 기간별 매매기준율에서 자동 수집합니다. 이미 수집된 환율은 서버 캐시에 저장하고 부족한 구간만 추가 조회합니다.</div>',
-    unsafe_allow_html=True,
-)
-
-st.divider()
+note("환율은 서울외국환중개 매매기준율에서 자동으로 가져옵니다. 이미 받아 둔 구간은 캐시를 쓰고 모자란 구간만 새로 조회합니다.")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 4 — 처리 시작
 # ══════════════════════════════════════════════════════════════════
-st.markdown("### ⚡ STEP 4 — 처리 시작")
+step_head(4, "생성")
 has_process_input = bool(uploaded_files) or bool(st.session_state.qoo10_entries)
 process_btn = st.button(
-    "🚀 엑셀 파일 생성하기",
+    "엑셀 파일 생성",
     type="primary",
     use_container_width=True,
     disabled=not has_process_input,
@@ -763,11 +899,10 @@ if process_btn:
             st.exception(e)
 
 if st.session_state.result_files:
-    st.divider()
-    st.markdown("### 📥 결과 파일 다운로드")
+    step_head(5, "내려받기")
     for i, f in enumerate(st.session_state.result_files):
         st.download_button(
-            f"⬇️ {f['name']}",
+            f["name"],
             data=f["bytes"],
             file_name=f["name"],
             mime=f["mime"],
@@ -775,8 +910,9 @@ if st.session_state.result_files:
             use_container_width=True,
         )
 
-st.divider()
-with st.expander("📌 파일명 규칙 안내"):
+st.markdown('<div style="border-top:1px solid var(--line); margin:2rem 0 1rem"></div>',
+            unsafe_allow_html=True)
+with st.expander("파일명 규칙"):
     st.markdown(
         """
 | 파일명 패턴 | 플랫폼 |
