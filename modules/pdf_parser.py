@@ -127,6 +127,10 @@ def _extract_submitter(full_text: str) -> dict:
     if m: sub['name'] = m.group(1).strip()
     m = re.search(r'대표자\s*성명\s+(\S+)', full_text)
     if m: sub['ceo'] = m.group(1).strip()
+    if not sub['ceo']:
+        # 라자다 서식: '성명(대표자) 홍길동' 인라인 라벨
+        m = re.search(r'성명\(대표자\)\s+(\S+)', full_text)
+        if m: sub['ceo'] = m.group(1).strip()
     # 주소: 제출자 섹션의 비라벨 줄 + 거래기간 줄 끝의 (괄호)
     addr = []
     in_sec = False
@@ -139,11 +143,16 @@ def _extract_submitter(full_text: str) -> dict:
             break
         if not in_sec:
             continue
-        if any(t.startswith(k) for k in ('사업자등록번호', '상호(법인명)', '대표자', '거래기간')):
+        if any(t.startswith(k) for k in ('사업자등록번호', '상호(법인명)', '대표자', '거래기간', '성명(대표자)')):
             if t.startswith('거래기간'):
                 mm = re.search(r'(\([^)]+\))\s*$', t)
                 if mm:
                     addr.append(mm.group(1))
+            elif '사업장소재지' in t:
+                # 라자다 서식: '성명(대표자) 홍길동 사업장소재지 서울...' 한 줄 병기
+                mm = re.search(r'사업장소재지\s+(.+)$', t)
+                if mm:
+                    addr.append(mm.group(1).strip())
             continue
         if t:
             addr.append(t)
@@ -197,10 +206,22 @@ def parse_shopee_pdf(pdf_path: str) -> dict:
     write_match = re.search(r'작성일자\s+([\d-]+)', full_text)
     write_date = write_match.group(1) if write_match else ''
 
-    # 통화
-    currency_match = re.search(r'통화\s+([A-Z]{3})', full_text)
-    if currency_match:
-        currency = currency_match.group(1)
+    # 통화 — 2절 요약표 데이터 행에서 추출
+    #   예: "주)두라로지스틱스 MX 2025-10-01 ~ 2025-10-31 USD 82 1,020.10"
+    #   헤더 행은 "... 기간 통화 발송수량 ..." 이라 '통화' 뒤가 통화코드가 아닙니다.
+    #   그래서 '통화 XXX' 패턴에 의존하면 못 읽고, 기간 뒤의 코드를 봐야 합니다.
+    #   결제통화가 국가 통화와 다를 수 있어(예: MX인데 USD 정산) 국가코드
+    #   fallback은 데이터 행에서 아무것도 못 읽었을 때만 사용합니다.
+    row_currencies = re.findall(
+        r'~\s*\d{4}-\d{2}-\d{2}\s+([A-Z]{3})\s+[\d,]+\s+[\d,]+\.?\d*', full_text)
+    currency = ''
+    if row_currencies:
+        currency = max(set(row_currencies), key=row_currencies.count)
+    else:
+        currency_match = re.search(r'통화\s+([A-Z]{3})', full_text)
+        if currency_match:
+            currency = currency_match.group(1)
+    if currency:
         if not country:
             # 통화로 국가 역추적
             for cc, cur in COUNTRY_TO_CURRENCY.items():
@@ -378,6 +399,7 @@ def parse_lazada_pdf(pdf_path: str) -> dict:
         'period_start': period_start,
         'period_end':   period_end,
         'write_date':   write_date,
+        'submitter':    _extract_submitter(full_text),
         'items':        items,
     }
 
