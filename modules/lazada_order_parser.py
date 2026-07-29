@@ -125,20 +125,33 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
     items = []
     skipped_no_date = 0
     skipped_no_amount = 0
-    # 환불·취소 공통 정책: 전액환불/반품/취소 상태는 매출 미반영, 사유별 집계.
+    # 환불·취소 공통 정책: 전액환불/반품/취소 상태는 매출 미반영.
+    # 사유별 집계와 함께, 시트에 정상 건과 같은 형식의 행으로 표시할 상세도 보존합니다.
     skipped_by_reason = {}
-
-    def _skip(reason, amount):
-        b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0})
-        b["count"] += 1
-        b["fx"] = round(b["fx"] + float(amount or 0), 2)
+    skipped_items = []
 
     for row_no in range(header_row + 1, selected.max_row + 1):
         delivered_date = _date(value(row_no, "deliveredDate"))
         amount = _number(value(row_no, "paidPrice"))
         status_key = _text(value(row_no, "status")).lower()
         if any(k in status_key for k in ("refund", "return", "cancel")):
-            _skip(status_key or "canceled", amount)
+            reason = status_key or "canceled"
+            b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0})
+            b["count"] += 1
+            b["fx"] = round(b["fx"] + float(amount or 0), 2)
+            shipping_country = _text(value(row_no, "shippingCountry"))
+            destination, currency, _name = _country_info(shipping_country, path.name)
+            skipped_items.append({
+                "date": delivered_date,
+                "order_number": _text(value(row_no, "orderNumber")),
+                "order_item_id": _text(value(row_no, "orderItemId")),
+                "tracking_no": _text(value(row_no, "trackingCode")),
+                "carrier": _text(value(row_no, "shippingProvider")),
+                "currency": currency,
+                "amount": float(amount or 0),
+                "skip_reason": reason,
+                "source_file": path.name,
+            })
             continue
         if not delivered_date:
             skipped_no_date += 1
@@ -218,6 +231,7 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
         "skipped_no_date": skipped_no_date,
         "skipped_no_amount": skipped_no_amount,
         "skipped_by_reason": skipped_by_reason,
+        "skipped_items": skipped_items,
     }
 
 
@@ -232,11 +246,13 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
     source_workbooks = []
     source_kinds = set()
     submitter = {}
-    # 파일별 미반영 사유 집계를 유실 없이 합칩니다 (조용한 제외 금지).
+    # 파일별 미반영 사유 집계·상세를 유실 없이 합칩니다 (조용한 제외 금지).
     skipped_by_reason = {}
+    skipped_items = []
     skipped_no_date = 0
     skipped_no_amount = 0
     for result in valid:
+        skipped_items.extend(result.get("skipped_items", []))
         items.extend(result.get("items", []))
         source_files.extend(result.get("source_files", []))
         source_workbooks.extend(result.get("source_workbooks", []))
@@ -278,6 +294,7 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
         "items": items,
         "row_count": len(items),
         "skipped_by_reason": skipped_by_reason,
+        "skipped_items": skipped_items,
         "skipped_no_date": skipped_no_date,
         "skipped_no_amount": skipped_no_amount,
     }

@@ -184,13 +184,24 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
     row_flags = []
     items = []
     skipped_blank = 0
-    # 미반영 주문을 사유별로 집계합니다: {사유: {'count': n, 'fx': 외화합계}}
+    # 미반영 주문을 사유별로 집계하고, 시트에 행으로 표시할 수 있도록 상세도 보존합니다.
     skipped_by_reason = {}
+    skipped_items = []
 
-    def _skip(reason, amount, currency):
+    def _skip(reason, amount, currency, order_name="", status="", fulfilled_date="", row_index=None):
         b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0, "currency": currency})
         b["count"] += 1
         b["fx"] = round(b["fx"] + float(amount or 0), 2)
+        skipped_items.append({
+            "order_name": order_name,
+            "date": fulfilled_date,
+            "financial_status": status,
+            "currency": currency,
+            "qty": 1,
+            "amount": float(amount or 0),
+            "skip_reason": reason,
+            "row_index": row_index,
+        })
 
     for raw_row in rows[header_row + 1:]:
         raw_row = list(raw_row or [])
@@ -235,13 +246,13 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         status_key = status.strip().lower()
         if status_key == "refunded":
             # 전액환불 — 배송 여부와 무관하게 매출 미반영.
-            _skip("refunded", amount, currency)
+            _skip("refunded", amount, currency, order_name, status, fulfilled_date, row_index)
             row_flags.append({"index": row_index, "date": fulfilled_date, "counted": False, "reason": "refunded"})
             continue
         if not fulfilled_date:
             # 배송이 이루어지지 않은 건 — voided(취소)와 그 외(unfulfilled)를 구분해 집계합니다.
             reason = "voided" if status_key == "voided" else "unfulfilled"
-            _skip(reason, amount, currency)
+            _skip(reason, amount, currency, order_name, status, "", row_index)
             row_flags.append({"index": row_index, "date": "", "counted": False, "reason": reason})
             continue
 
@@ -291,6 +302,7 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         "currencies": sorted(total_by_currency),
         "total_by_currency": total_by_currency,
         "row_count": len(items),
+        "skipped_items": skipped_items,
         "skipped_by_reason": skipped_by_reason,
         "skipped_unfulfilled": sum(v["count"] for k, v in skipped_by_reason.items()
                                    if k in ("voided", "unfulfilled")),
