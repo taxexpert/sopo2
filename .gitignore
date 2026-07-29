@@ -7,6 +7,10 @@ input/
 output/
 logs/
 
+# 회귀 검증용 예시 자료 — 고객 실자료(사업자번호·구매자 개인정보) 포함
+# 구조 설명은 samples/README.md 참고. 새 PC에서는 폴더를 따로 전달받을 것.
+samples/
+
 # 로컬 설정
 .streamlit/secrets.toml
 config.yaml
