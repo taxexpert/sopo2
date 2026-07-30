@@ -964,13 +964,13 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
     미반영(취소·반품·전액환불) 건도 정상 건과 같은 형식의 행으로 표시하되
     비고 열과 회색 배경으로 구분하고, 합계에는 넣지 않습니다.
     """
-    widths = {'A': 8, 'B': 13, 'C': 18, 'D': 20, 'E': 22, 'F': 18, 'G': 16, 'H': 12, 'I': 16, 'J': 12}
+    widths = {'A': 8, 'B': 13, 'C': 18, 'D': 20, 'E': 22, 'F': 18, 'G': 16, 'H': 12, 'I': 16, 'J': 12, 'K': 50}
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
     ws['A1'] = f'라자다 {currency} 상세'
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
-    ws.merge_cells('A1:J1')
-    headers = ['No', '배송완료일', '주문번호', '주문상품번호', '송장번호', '배송사', '외화금액', '환율', '원화금액', '비고']
+    ws.merge_cells('A1:K1')
+    headers = ['No', '배송완료일', '주문번호', '주문상품번호', '송장번호', '배송사', '외화금액', '환율', '원화금액', '비고', '상품명']
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=3, column=col, value=h)
         _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
@@ -988,12 +988,14 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
         rate = _lazada_item_rate(it, currency, rates, lazada_result, avg_rate)
         krw = round(amount * rate)
         vals = [idx, _lazada_item_date(it, lazada_result), it.get('order_number',''), it.get('order_item_id',''),
-                it.get('tracking_no',''), it.get('carrier',''), amount, rate, krw, '']
+                it.get('tracking_no',''), it.get('carrier',''), amount, rate, krw, '', it.get('item_name','')]
         row += 1
         for col, value in enumerate(vals, 1):
             c = ws.cell(row=row, column=col, value=value)
             nf = {7: NUM_FMT2, 8: _applied_rate_format(currency), 9: NUM_FMT}.get(col)
-            _style(c, font=FONT_DEFAULT, align=RIGHT if col in (7,8,9) else CENTER, border=THIN_BORDER, num_format=nf)
+            _style(c, font=FONT_DEFAULT,
+                   align=RIGHT if col in (7,8,9) else (LEFT if col == 11 else CENTER),
+                   border=THIN_BORDER, num_format=nf)
         total_fx += amount
         total_krw += krw
 
@@ -1002,7 +1004,7 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
     ws.cell(row, 1, '합계(매출 반영)')
     ws.cell(row, 7, total_fx)
     ws.cell(row, 9, total_krw)
-    for col in range(1, 11):
+    for col in range(1, 12):
         c = ws.cell(row, col)
         nf = {7: NUM_FMT2, 9: NUM_FMT}.get(col)
         _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (7,9) else CENTER, border=THIN_BORDER, num_format=nf)
@@ -1027,12 +1029,13 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
             row += 1
             vals = [next_no, it.get('date',''), it.get('order_number',''), it.get('order_item_id',''),
                     it.get('tracking_no',''), it.get('carrier',''), float(it.get('amount',0) or 0), None, None,
-                    _skip_reason_label(it.get('skip_reason'))]
+                    _skip_reason_label(it.get('skip_reason')), it.get('item_name','')]
             for col, value in enumerate(vals, 1):
                 c = ws.cell(row=row, column=col, value=value)
                 nf = {7: NUM_FMT2}.get(col)
                 _style(c, font=SKIP_FONT if col == 10 else FONT_DEFAULT, fill=GRAY_FILL,
-                       align=RIGHT if col in (7,8,9) else CENTER, border=THIN_BORDER, num_format=nf)
+                       align=RIGHT if col in (7,8,9) else (LEFT if col == 11 else CENTER),
+                       border=THIN_BORDER, num_format=nf)
 
 
 # ── 이베이/린코스 소포수령증 시트 ───────────────────────────────

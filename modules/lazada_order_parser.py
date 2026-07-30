@@ -149,6 +149,7 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
                 "carrier": _text(value(row_no, "shippingProvider")),
                 "currency": currency,
                 "amount": float(amount or 0),
+                "item_name": _text(value(row_no, "itemName")),
                 "skip_reason": reason,
                 "source_file": path.name,
             })
