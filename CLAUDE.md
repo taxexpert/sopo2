@@ -5,23 +5,26 @@
 
 ## PR을 만들 때 — base 저장소를 반드시 명시할 것
 
-`taxexpert/sopo`는 이전 담당자의 **`rambbo1/sopo`를 fork한 저장소**다. 그래서 GitHub이 PR 생성
-화면에서 base 저장소를 부모인 `rambbo1/sopo`로 **기본 지정한다**. `git remote`는 정상적으로
-`taxexpert/sopo`를 가리키므로 로컬 설정만 봐서는 드러나지 않는다. 명시하지 않으면 회사 저장소가
-아니라 이전 담당자 저장소로 PR이 올라간다.
+현재 저장소는 **`taxexpert/sopo2`**다 (구 `taxexpert/sopo`에서 이전). 그리고 이전 담당자의
+**`rambbo1/sopo`를 fork한 저장소**라, GitHub이 PR 생성 화면에서 base 저장소를 부모인
+`rambbo1/sopo`로 **기본 지정한다**. 명시하지 않으면 회사 저장소가 아니라 이전 담당자 저장소로
+PR이 올라간다.
 
 ```bash
-gh pr create --repo taxexpert/sopo --base main --head <branch>
+gh pr create --repo taxexpert/sopo2 --base main --head <branch>
 ```
 
 웹에서 만들 때는 저장소 내부 비교 URL을 쓴다. base가 부모로 갈 수 없다.
 
 ```
-https://github.com/taxexpert/sopo/compare/main...<branch>?expand=1
+https://github.com/taxexpert/sopo2/compare/main...<branch>?expand=1
 ```
 
-`https://github.com/taxexpert/sopo/pull/new/<branch>` 형태는 부모 저장소로 기본 지정되므로 쓰지 않는다.
+`https://github.com/taxexpert/sopo2/pull/new/<branch>` 형태는 부모 저장소로 기본 지정되므로 쓰지 않는다.
 `git push` 직후 원격이 출력하는 링크가 바로 이 형태다.
+
+PR 화면 맨 위 드롭다운 네 개 중 **첫 번째 `base repository`**가 요주의 지점이다.
+화면에 `rambbo1`이 보이면 잘못된 것이고, 양쪽 모두 `taxexpert/sopo2`여야 한다.
 
 ## 배포
 
