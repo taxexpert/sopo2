@@ -12,8 +12,15 @@
 | `modules/lazada_order_parser.py` | 라자다 주문내역 xlsx 파서 | openpyxl, pandas |
 | `modules/shopify_parser.py` | 쇼피파이 orders CSV/xlsx 파서 | openpyxl, pandas |
 | `modules/exchange_rate.py` | SMBS 일별/월평균 수집·캐시·조회·단위 정규화 | requests, bs4, (selenium) |
+| `modules/reporting_period.py` | 신고기간 비파괴 분류 (해당분/이전기간/미도래/날짜없음/분할불가 차단) | - |
+| `modules/dedup_guard.py` | 중복·변경충돌·사업자 혼합 검사 (기준: docs/POLICY.md) | - |
 | `modules/excel_writer.py` | 매출집계 워크북 생성 | openpyxl |
 | `modules/extra_docs.py` | 영세율첨부서류제출명세서 / 수출실적명세서 | openpyxl |
+
+파싱 결과는 소비자(매출집계/신고서류)로 갈라지기 **전에** `dedup_guard` →
+`check_submitter_mix` → `reporting_period` 순으로 한 번만 거른다
+(`app.py`·`process.py` 동일). 필터를 소비자별로 두 번 구현하면 산출물 합계가
+어긋나므로 이 순서를 깨지 말 것.
 
 ---
 
@@ -155,6 +162,10 @@
 - [ ] `_monthly_rate_requests()` (월평균이 필요한 통화·월)
 - [ ] `_daily_rate_period_bounds()` (환율 조회 구간)
 - [ ] `generate_excel(...)` / `build_declaration_rows(...)` 호출 인자
+- [ ] `modules/reporting_period.py` — 새 플랫폼의 기간 필터 함수(건별 날짜형이면
+      `_filter_pointwise` 재사용, 집계형이면 `classify_span` 기반 차단) + `apply_reporting_period` 연결
+- [ ] `modules/dedup_guard.py` — 강한 거래키 정의(실측으로 유일성 확인 후) + `dedup_transactions` 연결.
+      키 유일성이 불확실하면 자동 제외 대신 경고만 (docs/POLICY.md 4단계 기준)
 
 ### 5-3. 엑셀 출력 (`modules/excel_writer.py`)
 - [ ] `period_labels()`

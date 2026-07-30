@@ -11,6 +11,7 @@
 import sys
 import os
 import argparse
+import hashlib
 import shutil
 import yaml
 import re
@@ -29,6 +30,10 @@ from modules.exchange_rate import (
     fetch_all_currencies, fetch_monthly_avg_currencies_for_period, merge_monthly_rates,
 )
 from modules.excel_writer  import generate_excel
+from modules.reporting_period import apply_reporting_period, format_exclusion_lines
+from modules.dedup_guard import (
+    check_submitter_mix, dedup_transactions, format_dedup_lines,
+)
 
 BASE_DIR    = Path(__file__).parent
 INPUT_DIR   = BASE_DIR / 'input'
@@ -100,7 +105,8 @@ def _monthly_rate_requests(ebay_results, qoo10_result) -> dict:
 
 # ── 메인 처리 ───────────────────────────────────────────────────
 
-def process(year: int = None, month: int = None, pdf_paths: list = None):
+def process(year: int = None, month: int = None, pdf_paths: list = None,
+            period_start: str = '', period_end: str = ''):
     config = load_config()
     print(f'\n{"="*60}')
     print(f'  소포수령증 자동화 처리 시작 — {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
@@ -118,6 +124,17 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
     for p in pdf_paths:
         print(f'   - {p.name}')
 
+    # 같은 바이트의 파일은 한 번만 파싱합니다 (이름이 달라도 SHA-256으로 판정).
+    # pdf_paths 자체는 그대로 두어 처리 후 이동 대상에는 전부 포함됩니다.
+    parse_paths, _seen_digests = [], {}
+    for p in pdf_paths:
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        if digest in _seen_digests:
+            print(f'   ⚠️  중복 파일 제외: {p.name} (= {_seen_digests[digest]})')
+            continue
+        _seen_digests[digest] = p.name
+        parse_paths.append(p)
+
     # 연월 결정
     if year is None or month is None:
         year, month = infer_year_month(pdf_paths)
@@ -134,7 +151,7 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
     shopify_results = []
     qoo10_result = None
 
-    for input_path in pdf_paths:
+    for input_path in parse_paths:
         if input_path.suffix.lower() in {'.xlsx', '.xlsm', '.csv'}:
             if is_shopify_orders_file(input_path):
                 result = parse_shopify_orders(input_path)
@@ -206,6 +223,47 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
         print(f'     큐텐 (수동입력) — {qoo10_result["qty"]}건 / {qoo10_result["amount"]:,} JPY')
     elif not qoo10_result:
         print('     ⚠️  큐텐 데이터 없음 (config.yaml에 수동 입력하거나 PDF 추가)')
+
+    # ── 중복·충돌·사업자 검사 ──────────────────────────────
+    # 확정 중복만 자동 제외하고, 변경 충돌·사업자 혼합은 예외로 중단합니다.
+    guard = dedup_transactions(
+        shopee_results=shopee_results, lazada_result=lazada_result,
+        qoo10_result=qoo10_result, ebay_results=ebay_results,
+        joom_results=joom_results, shopify_results=shopify_results,
+    )
+    shopee_results = guard['shopee_results']
+    lazada_result = guard['lazada_result']
+    qoo10_result = guard['qoo10_result']
+    ebay_results = guard['ebay_results']
+    joom_results = guard['joom_results']
+    shopify_results = guard['shopify_results']
+    for line in format_dedup_lines(guard['report']):
+        print(f'  {line}')
+    for w in check_submitter_mix(
+        shopee_results=shopee_results, lazada_result=lazada_result,
+        qoo10_result=qoo10_result, ebay_results=ebay_results,
+        joom_results=joom_results, shopify_results=shopify_results,
+    ):
+        print(f'  ⚠️  {w}')
+
+    # ── 신고기간 분류 ──────────────────────────────────────
+    # 매출집계·환율 범위가 같은 거래집합을 쓰도록 소비자로 갈라지기 전 한 번만 거릅니다.
+    if period_start or period_end:
+        print(f'\n📆 신고기간 {period_start} ~ {period_end} 적용')
+    scoped = apply_reporting_period(
+        shopee_results=shopee_results, lazada_result=lazada_result,
+        qoo10_result=qoo10_result, ebay_results=ebay_results,
+        joom_results=joom_results, shopify_results=shopify_results,
+        start=period_start, end=period_end,
+    )
+    shopee_results = scoped['shopee_results']
+    lazada_result = scoped['lazada_result']
+    qoo10_result = scoped['qoo10_result']
+    ebay_results = scoped['ebay_results']
+    joom_results = scoped['joom_results']
+    shopify_results = scoped['shopify_results']
+    for line in format_exclusion_lines(scoped['report']):
+        print(f'  {line}')
 
     # ── 환율 수집 ──────────────────────────────────────────
     print(f'\n[2/4] SMBS 환율 수집 중...')
@@ -308,7 +366,14 @@ if __name__ == '__main__':
     parser.add_argument('--year',  type=int, help='처리 연도 (예: 2025)')
     parser.add_argument('--month', type=int, help='처리 월 (예: 12)')
     parser.add_argument('--pdf', type=str, help='특정 PDF/Excel 파일 경로 (복수 지정 시 쉼표 구분)')
+    parser.add_argument('--period-start', type=str, default='',
+                        help='신고기간 시작일 (예: 2026-01-01). 종료일과 함께 지정합니다')
+    parser.add_argument('--period-end', type=str, default='',
+                        help='신고기간 종료일 (예: 2026-06-30). 선적일자 기준으로 거릅니다')
     args = parser.parse_args()
+
+    if bool(args.period_start) != bool(args.period_end):
+        parser.error('--period-start 와 --period-end 는 함께 지정해야 합니다.')
 
     pdf_paths = None
     if args.pdf:
@@ -318,4 +383,6 @@ if __name__ == '__main__':
         year=args.year,
         month=args.month,
         pdf_paths=pdf_paths,
+        period_start=args.period_start,
+        period_end=args.period_end,
     )
