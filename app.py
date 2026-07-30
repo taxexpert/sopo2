@@ -51,6 +51,13 @@ from modules.reporting_period import (
     format_exclusion_lines,
     period_presets,
 )
+from modules.dedup_guard import (
+    DuplicateConflictError,
+    MixedSubmitterError,
+    check_submitter_mix,
+    dedup_transactions,
+    format_dedup_lines,
+)
 
 CURRENCIES = ["MYR", "PHP", "SGD", "THB", "TWD", "VND", "IDR", "JPY", "BRL", "MXN", "USD", "EUR", "GBP", "CAD", "AUD"]
 
@@ -798,9 +805,20 @@ if process_btn:
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         input_paths = []
-        for uf in (uploaded_files or []):
-            p = tmpdir / uf.name
-            p.write_bytes(uf.getbuffer())
+        seen_digests = {}
+        for i, uf in enumerate(uploaded_files or []):
+            payload = bytes(uf.getbuffer())
+            # ① 같은 바이트의 파일은 한 번만 반영 (이름이 달라도 SHA-256으로 판정)
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest in seen_digests:
+                log(f"[중복] 같은 내용의 파일이라 한 번만 반영: {uf.name} (= {seen_digests[digest]})")
+                continue
+            seen_digests[digest] = uf.name
+            # 같은 파일명이 다른 내용으로 올라와도 덮어쓰지 않도록 업로드별 하위 폴더에 저장
+            sub = tmpdir / f"upload_{i:02d}"
+            sub.mkdir(exist_ok=True)
+            p = sub / uf.name
+            p.write_bytes(payload)
             input_paths.append(p)
 
         try:
@@ -897,6 +915,40 @@ if process_btn:
                     or joom_results or shopify_results):
                 raise RuntimeError("처리할 데이터가 없습니다. PDF/Excel/CSV 또는 큐텐 수동 입력을 확인해 주세요.")
             log(f"✅ 파일 분석 완료 ({time.perf_counter() - t_pdf:.1f}초)")
+
+            # ② 거래 중복·충돌 검사 — 확정 중복(키·내용 모두 동일)만 자동 제외하고,
+            # 같은 거래키에 내용이 다른 자료(변경 충돌)는 자동 선택하지 않고 중단합니다.
+            try:
+                guard = dedup_transactions(
+                    shopee_results=shopee_results, lazada_result=lazada_result,
+                    qoo10_result=qoo10_result, ebay_results=ebay_results,
+                    joom_results=joom_results, shopify_results=shopify_results,
+                )
+            except DuplicateConflictError as exc:
+                for line in str(exc).splitlines():
+                    log(f"[STOP] {line}")
+                raise
+            shopee_results = guard["shopee_results"]
+            lazada_result = guard["lazada_result"]
+            qoo10_result = guard["qoo10_result"]
+            ebay_results = guard["ebay_results"]
+            joom_results = guard["joom_results"]
+            shopify_results = guard["shopify_results"]
+            for line in format_dedup_lines(guard["report"]):
+                log(line)
+
+            # ③ 사업자 혼합 차단 — 읽힌 사업자번호가 2개 이상이면 중단합니다.
+            try:
+                for w in check_submitter_mix(
+                    shopee_results=shopee_results, lazada_result=lazada_result,
+                    qoo10_result=qoo10_result, ebay_results=ebay_results,
+                    joom_results=joom_results, shopify_results=shopify_results,
+                ):
+                    log(f"[WARN] {w}")
+            except MixedSubmitterError as exc:
+                for line in str(exc).splitlines():
+                    log(f"[STOP] {line}")
+                raise
 
             # 신고기간 분류 — 매출집계·신고서류·환율 범위가 모두 같은 거래집합을 쓰도록
             # 소비자로 갈라지기 전 이 지점에서 한 번만 거릅니다.

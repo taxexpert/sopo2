@@ -11,6 +11,7 @@
 import sys
 import os
 import argparse
+import hashlib
 import shutil
 import yaml
 import re
@@ -30,6 +31,9 @@ from modules.exchange_rate import (
 )
 from modules.excel_writer  import generate_excel
 from modules.reporting_period import apply_reporting_period, format_exclusion_lines
+from modules.dedup_guard import (
+    check_submitter_mix, dedup_transactions, format_dedup_lines,
+)
 
 BASE_DIR    = Path(__file__).parent
 INPUT_DIR   = BASE_DIR / 'input'
@@ -120,6 +124,17 @@ def process(year: int = None, month: int = None, pdf_paths: list = None,
     for p in pdf_paths:
         print(f'   - {p.name}')
 
+    # 같은 바이트의 파일은 한 번만 파싱합니다 (이름이 달라도 SHA-256으로 판정).
+    # pdf_paths 자체는 그대로 두어 처리 후 이동 대상에는 전부 포함됩니다.
+    parse_paths, _seen_digests = [], {}
+    for p in pdf_paths:
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        if digest in _seen_digests:
+            print(f'   ⚠️  중복 파일 제외: {p.name} (= {_seen_digests[digest]})')
+            continue
+        _seen_digests[digest] = p.name
+        parse_paths.append(p)
+
     # 연월 결정
     if year is None or month is None:
         year, month = infer_year_month(pdf_paths)
@@ -136,7 +151,7 @@ def process(year: int = None, month: int = None, pdf_paths: list = None,
     shopify_results = []
     qoo10_result = None
 
-    for input_path in pdf_paths:
+    for input_path in parse_paths:
         if input_path.suffix.lower() in {'.xlsx', '.xlsm', '.csv'}:
             if is_shopify_orders_file(input_path):
                 result = parse_shopify_orders(input_path)
@@ -208,6 +223,28 @@ def process(year: int = None, month: int = None, pdf_paths: list = None,
         print(f'     큐텐 (수동입력) — {qoo10_result["qty"]}건 / {qoo10_result["amount"]:,} JPY')
     elif not qoo10_result:
         print('     ⚠️  큐텐 데이터 없음 (config.yaml에 수동 입력하거나 PDF 추가)')
+
+    # ── 중복·충돌·사업자 검사 ──────────────────────────────
+    # 확정 중복만 자동 제외하고, 변경 충돌·사업자 혼합은 예외로 중단합니다.
+    guard = dedup_transactions(
+        shopee_results=shopee_results, lazada_result=lazada_result,
+        qoo10_result=qoo10_result, ebay_results=ebay_results,
+        joom_results=joom_results, shopify_results=shopify_results,
+    )
+    shopee_results = guard['shopee_results']
+    lazada_result = guard['lazada_result']
+    qoo10_result = guard['qoo10_result']
+    ebay_results = guard['ebay_results']
+    joom_results = guard['joom_results']
+    shopify_results = guard['shopify_results']
+    for line in format_dedup_lines(guard['report']):
+        print(f'  {line}')
+    for w in check_submitter_mix(
+        shopee_results=shopee_results, lazada_result=lazada_result,
+        qoo10_result=qoo10_result, ebay_results=ebay_results,
+        joom_results=joom_results, shopify_results=shopify_results,
+    ):
+        print(f'  ⚠️  {w}')
 
     # ── 신고기간 분류 ──────────────────────────────────────
     # 매출집계·환율 범위가 같은 거래집합을 쓰도록 소비자로 갈라지기 전 한 번만 거릅니다.

@@ -106,7 +106,8 @@ def classify_span(span_start, span_end, start, end):
 
 # ── 집계 재계산 ──────────────────────────────────────────────────
 
-def _sum_by_currency(items, currency_key="currency", amount_key="amount"):
+def sum_by_currency(items, currency_key="currency", amount_key="amount"):
+    """남은 거래로 통화별 외화 합계를 다시 계산합니다."""
     totals = {}
     for it in items:
         cur = str(it.get(currency_key, "") or "").strip().upper()
@@ -116,7 +117,8 @@ def _sum_by_currency(items, currency_key="currency", amount_key="amount"):
     return totals
 
 
-def _date_bounds(items, date_key="date"):
+def date_bounds(items, date_key="date"):
+    """남은 거래의 기준일 최소·최대를 YYYYMMDD 정수로 돌려줍니다."""
     values = [d for d in (date_to_int(it.get(date_key)) for it in items) if d]
     return (min(values), max(values)) if values else (None, None)
 
@@ -127,7 +129,7 @@ def _apply_bounds(result, items, start, end, date_key="date"):
     환율 조회 구간과 파일명 라벨이 이 값을 쓰므로, 걸러낸 뒤의 실제 범위여야
     필요 없는 날짜의 환율을 받아오지 않습니다.
     """
-    lo, hi = _date_bounds(items, date_key)
+    lo, hi = date_bounds(items, date_key)
     if lo is None:
         doc_lo = date_to_int(result.get("period_start"))
         doc_hi = date_to_int(result.get("period_end"))
@@ -210,7 +212,7 @@ def _filter_shopee(shopee_results, start, end, col):
 def _filter_joom(joom_results, start, end, col):
     kept_results = _filter_pointwise(joom_results, "Joom", start, end, col)
     for res in kept_results:
-        res["total_by_currency"] = _sum_by_currency(res["items"])
+        res["total_by_currency"] = sum_by_currency(res["items"])
         # declared_total 은 원본 PDF 표기 합계이므로 그대로 둡니다. 기간 필터로 일부를
         # 뺀 뒤에는 건별 합산과 다른 것이 정상이라, 합계 불일치 경고를 끕니다.
         res["period_filtered"] = True
@@ -222,7 +224,7 @@ def _filter_shopify(shopify_results, start, end, col):
     kept_results = _filter_pointwise(shopify_results, "쇼피파이", start, end, col)
     for res in kept_results:
         items = res["items"]
-        res["total_by_currency"] = _sum_by_currency(items)
+        res["total_by_currency"] = sum_by_currency(items)
         res["row_count"] = len(items)
         res["currencies"] = sorted({it.get("currency") for it in items if it.get("currency")})
         # 원본 시트의 반영 표시도 함께 맞춥니다.
@@ -275,7 +277,7 @@ def _filter_lazada(lazada_result, start, end, col):
         return None
     out["items"] = kept
     out["row_count"] = len(kept)
-    out["total_amount_by_currency"] = _sum_by_currency(kept)
+    out["total_amount_by_currency"] = sum_by_currency(kept)
     out["total_qty"] = sum(int(it.get("qty", 0) or 0) for it in kept)
     out["currencies"] = sorted({it.get("currency") for it in kept if it.get("currency")})
     _apply_bounds(out, kept, start, end)
