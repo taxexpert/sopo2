@@ -568,11 +568,12 @@ report_period_end = ""
 _this_year = date.today().year
 
 if _period_mode == "반기·분기":
-    pc1, pc2 = st.columns([1, 2])
+    pc1, pc2 = st.columns([1, 3])
     _year = pc1.number_input("연도", min_value=2000, max_value=2100,
                              value=_this_year, step=1, format="%d")
     _presets = period_presets(int(_year))
-    _label = pc2.selectbox("기간", list(_presets))
+    # 텍스트 입력이 열리는 selectbox 대신 고정 메뉴에서만 고르게 합니다.
+    _label = pc2.radio("기간", list(_presets), horizontal=True)
     report_period_start, report_period_end = _presets[_label]
 elif _period_mode == "직접 입력":
     pc1, pc2 = st.columns(2)
