@@ -117,14 +117,16 @@ html { font-size: 17px; }
 .doc-head__mark .mark-tape { stroke:var(--sky); }
 .doc-head h1.doc-head__title { font-size:1.85rem; font-weight:700; letter-spacing:-0.015em;
     line-height:1.2; color:var(--ink); margin:0; padding:0; }
+/* 폭 제한을 두지 않아야 아래 구획 상자들과 오른쪽 끝선이 맞습니다. */
 .doc-head p.doc-head__sub { font-size:0.95rem; line-height:1.6; color:var(--ink-soft);
-    margin:0.6rem 0 0; max-width:60ch; }
+    margin:0.6rem 0 0; }
 
 /* ── 단계 구획 ── */
 .step { display:flex; align-items:baseline; gap:0.7rem;
     border-top:1px solid var(--line); padding-top:1.9rem; margin-bottom:0.7rem; }
 .step--lead { border-top:0; padding-top:0; }
-.step__no { flex:none; font-size:1.05rem; font-weight:700; color:var(--accent);
+/* 번호는 제목과 같은 크기로 맞춰야 baseline 정렬에서 위끝도 나란해집니다. */
+.step__no { flex:none; font-size:1.12rem; font-weight:700; color:var(--accent);
     font-variant-numeric:tabular-nums; line-height:1.3; }
 .step__rule { flex:none; width:1px; align-self:stretch; background:var(--line); }
 .step h2.step__title { font-size:1.12rem; font-weight:650; letter-spacing:-0.01em;
@@ -320,7 +322,8 @@ step_head(1, "수령증·주문내역 올리기", lead=True)
 # CSS로 margin을 박으면 둘 중 한쪽에서 반드시 어긋나므로 열 정렬 인자를 씁니다.
 c_desc, c_reset = st.columns([5, 1], vertical_alignment="center")
 c_desc.caption("쇼피·라자다·큐텐재팬·이베이(린코스)·Joom PDF, 라자다 주문내역 Excel, 쇼피파이 orders CSV를 함께 올릴 수 있습니다.")
-if c_reset.button("초기화"):
+# 열을 가득 채워야 버튼 오른쪽 끝이 아래 상자들의 끝선과 맞습니다.
+if c_reset.button("초기화", use_container_width=True):
     st.session_state.uploader_key += 1
     st.session_state.qoo10_entries = []
     st.session_state.result_files = []
