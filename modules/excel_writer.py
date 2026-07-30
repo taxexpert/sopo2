@@ -817,10 +817,11 @@ def _copy_lazada_source_workbooks(ws, source_workbooks: list) -> bool:
     return not first_sheet
 
 
-# 미반영 사유 한글 표기 (시트 구분 열에 사용)
+# 미반영 사유 한글 표기 (시트 구분 열에 사용) — 부분일치 순서대로 검사합니다.
+# 라자다 status는 'refund_completed' 같은 변형이 있어 짧은 키(refund/return/cancel)도 둡니다.
 SKIP_REASON_LABELS = {
-    'refunded': '전액환불', 'voided': '취소', 'unfulfilled': '미배송',
-    'canceled': '취소', 'cancelled': '취소', 'returned': '반품',
+    'refund': '전액환불', 'void': '취소', 'unfulfilled': '미배송',
+    'cancel': '취소', 'return': '반품',
 }
 SKIP_FONT = Font(name='맑은 고딕', size=9, color='C00000')
 
@@ -990,30 +991,42 @@ def write_lazada_currency_detail_sheet(ws, currency: str, items: list, rates: di
         total_fx += amount
         total_krw += krw
 
-    # 미반영 건 — 같은 형식의 행, 회색 배경 + 비고에 사유. 환율·원화는 비우고 합계 제외.
-    skipped = [it for it in (lazada_result or {}).get('skipped_items', [])
-               if it.get('currency') == currency]
-    next_no = len(items)
-    for it in sorted(skipped, key=lambda x: (x.get('date') or '', x.get('order_number') or '')):
-        next_no += 1
-        row += 1
-        vals = [next_no, it.get('date',''), it.get('order_number',''), it.get('order_item_id',''),
-                it.get('tracking_no',''), it.get('carrier',''), float(it.get('amount',0) or 0), None, None,
-                _skip_reason_label(it.get('skip_reason'))]
-        for col, value in enumerate(vals, 1):
-            c = ws.cell(row=row, column=col, value=value)
-            nf = {7: NUM_FMT2}.get(col)
-            _style(c, font=SKIP_FONT if col == 10 else FONT_DEFAULT, fill=GRAY_FILL,
-                   align=RIGHT if col in (7,8,9) else CENTER, border=THIN_BORDER, num_format=nf)
-
-    total_row = row + 2
-    ws.cell(total_row, 1, '합계(매출 반영)')
-    ws.cell(total_row, 7, total_fx)
-    ws.cell(total_row, 9, total_krw)
+    # 반영 건 바로 아래 합계, 그 아래 미반영 건을 사유(환불→반품→취소) 순으로 나열합니다.
+    row += 1
+    ws.cell(row, 1, '합계(매출 반영)')
+    ws.cell(row, 7, total_fx)
+    ws.cell(row, 9, total_krw)
     for col in range(1, 11):
-        c = ws.cell(total_row, col)
+        c = ws.cell(row, col)
         nf = {7: NUM_FMT2, 9: NUM_FMT}.get(col)
         _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (7,9) else CENTER, border=THIN_BORDER, num_format=nf)
+
+    def _reason_rank(reason):
+        text = str(reason or '').lower()
+        if 'refund' in text:
+            return 0
+        if 'return' in text:
+            return 1
+        return 2  # cancel 등
+
+    skipped = [it for it in (lazada_result or {}).get('skipped_items', [])
+               if it.get('currency') == currency]
+    skipped.sort(key=lambda x: (_reason_rank(x.get('skip_reason')),
+                                x.get('date') or '', x.get('order_number') or ''))
+    if skipped:
+        row += 1  # 합계와 미반영 그룹 사이 한 줄 공백
+        next_no = len(items)
+        for it in skipped:
+            next_no += 1
+            row += 1
+            vals = [next_no, it.get('date',''), it.get('order_number',''), it.get('order_item_id',''),
+                    it.get('tracking_no',''), it.get('carrier',''), float(it.get('amount',0) or 0), None, None,
+                    _skip_reason_label(it.get('skip_reason'))]
+            for col, value in enumerate(vals, 1):
+                c = ws.cell(row=row, column=col, value=value)
+                nf = {7: NUM_FMT2}.get(col)
+                _style(c, font=SKIP_FONT if col == 10 else FONT_DEFAULT, fill=GRAY_FILL,
+                       align=RIGHT if col in (7,8,9) else CENTER, border=THIN_BORDER, num_format=nf)
 
 
 # ── 이베이/린코스 소포수령증 시트 ───────────────────────────────
@@ -1083,18 +1096,21 @@ def write_ebay_receipt_sheet(ws, ebay_data: dict, rates: dict, submitter: dict =
 # ── Joom(에이치3네트웍스) 소포수령증 시트 ───────────────────────
 
 def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
-    """Joom [상품 수령 및 운송 확인증] 시트 — 신고에 필요한 값만 담은 간결한 표.
+    """Joom [상품 수령 및 운송 확인증] 시트.
 
+    ⚠️ 출력 필수항목 (사용자 지정 2026-07-30 — 지시 없이 삭제·변경 금지):
+    서비스 / 발송날짜 / Order ID / 도착국가 / 접수번호 / 금액 / 적용환율 / 원화금액 / 상품명
+    + 조회기간 해외배송 합계 행 + PDF 합계 표기 행.
     건별 발송날짜의 일별 매매기준율을 적용합니다.
     """
-    widths = {'A': 6, 'B': 12, 'C': 12, 'D': 10, 'E': 26, 'F': 12, 'G': 10, 'H': 14}
+    widths = {'A': 16, 'B': 12, 'C': 14, 'D': 10, 'E': 26, 'F': 12, 'G': 12, 'H': 14, 'I': 50}
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
     sub = submitter or joom_data.get('submitter') or DEFAULT_SUBMITTER
     ws['A1'] = '상품 수령 및 운송 확인증 - Joom'
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
-    ws.merge_cells('A1:H1')
+    ws.merge_cells('A1:I1')
 
     info = [
         ('사업자등록번호', sub.get('biz_no', ''), '법인명', sub.get('name', '')),
@@ -1119,14 +1135,15 @@ def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
     ws.cell(row=r, column=2, value=f"{joom_data.get('carrier') or 'H3 NETWORKS'}를 통해 해외로 수출한 내역 증명")
     r += 1
 
-    headers = ['No', '발송날짜', 'Order ID', '도착국가', '접수번호', '외화금액', '환율', '원화금액']
+    headers = ['서비스', '발송날짜', 'Order ID', '도착국가', '접수번호',
+               '금액', '적용환율', '원화금액', '상품명']
     for c, h in enumerate(headers, 1):
         cell = ws.cell(row=r, column=c, value=h)
         _style(cell, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
 
     total_fx = 0.0
     total_krw = 0
-    for no, item in enumerate(joom_data.get('items', []), 1):
+    for item in joom_data.get('items', []):
         r += 1
         cur = item.get('currency', 'USD')
         rate = _get_rate(rates, cur, item.get('date', ''))
@@ -1134,89 +1151,122 @@ def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
         krw = round(amount * rate / RATE_DIVISOR.get(cur, 1))
         total_fx += amount
         total_krw += krw
-        vals = [no, item.get('date', ''), item.get('order_id', ''),
-                item.get('destination', ''), item.get('tracking_no', ''), amount, rate, krw]
+        vals = [item.get('service', '해외배송서비스'), item.get('date', ''), item.get('order_id', ''),
+                item.get('destination', ''), item.get('tracking_no', ''),
+                amount, rate, krw, item.get('item_name', '')]
         for c, v in enumerate(vals, 1):
             cell = ws.cell(row=r, column=c, value=v)
             nf = {6: NUM_FMT2, 7: _applied_rate_format(cur), 8: NUM_FMT}.get(c)
             _style(cell, font=FONT_DEFAULT,
-                   align=RIGHT if c in (6, 7, 8) else CENTER,
+                   align=RIGHT if c in (6, 7, 8) else (LEFT if c == 9 else CENTER),
                    border=THIN_BORDER, num_format=nf)
 
-    r += 2
-    ws.cell(row=r, column=1, value='합계')
+    r += 1
+    ws.cell(row=r, column=1, value='조회기간 해외배송 합계')
     ws.cell(row=r, column=6, value=total_fx)
     ws.cell(row=r, column=8, value=total_krw)
-    for c in range(1, 9):
+    for c in range(1, 10):
         nf = {6: NUM_FMT2, 8: NUM_FMT}.get(c)
         _style(ws.cell(row=r, column=c), font=FONT_BOLD, fill=GRAY_FILL,
                align=RIGHT if c in (6, 8) else CENTER, border=THIN_BORDER, num_format=nf)
-    # PDF 인쇄 합계와의 대조는 파싱 단계에서 검증하며(total_mismatch),
-    # 불일치 시 처리 로그에 경고가 표시됩니다. 시트에는 필요한 값만 남깁니다.
+
+    # PDF 인쇄 합계와 나란히 표시해 순간 대조가 가능하게 합니다.
+    declared = joom_data.get('declared_total') or {}
+    if declared:
+        r += 1
+        ws.cell(row=r, column=1, value='PDF 합계 표기')
+        ws.cell(row=r, column=6, value=sum(float(v or 0) for v in declared.values()))
+        _style(ws.cell(row=r, column=1), font=FONT_DEFAULT, align=CENTER)
+        _style(ws.cell(row=r, column=6), font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT2)
+        if joom_data.get('total_mismatch'):
+            ws.cell(row=r, column=7, value='⚠️ 건별 합계와 불일치')
+            _style(ws.cell(row=r, column=7), font=SKIP_FONT)
 
 
 # ── 쇼피파이 주문내역 시트 ──────────────────────────────────────
 
 def write_shopify_sheet(ws, shopify_data: dict, rates: dict):
-    """쇼피파이 주문내역 시트 — 신고에 필요한 값만 담은 간결한 표.
+    """쇼피파이 주문내역 시트.
 
-    미반영(전액환불·취소·미배송) 건도 정상 건과 같은 형식의 행으로 표시하되
-    구분 열과 회색 배경으로 한눈에 구분하고, 합계에는 넣지 않습니다.
+    행 배치(사용자 지정 규칙):
+      1) 매출 반영 건(paid·partially_refunded)을 먼저 모아서 표시
+      2) 바로 아래 합계(매출 반영)
+      3) 그 아래 refunded(전액환불) 건들
+      4) 그 아래 voided(취소) 건들, 마지막으로 미배송 건들
+    미반영 행은 구분 열 + 회색 배경으로 표시하고 환율·원화는 비웁니다.
     """
-    widths = {'A': 6, 'B': 12, 'C': 12, 'D': 13, 'E': 18, 'F': 8, 'G': 12, 'H': 10, 'I': 14}
+    widths = {'A': 6, 'B': 12, 'C': 12, 'D': 13, 'E': 18, 'F': 8, 'G': 12, 'H': 10, 'I': 14, 'J': 50}
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
     store = str(shopify_data.get('store') or '').strip()
     ws['A1'] = f'쇼피파이 주문내역 - {store}' if store else '쇼피파이 주문내역'
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
-    ws.merge_cells('A1:I1')
+    ws.merge_cells('A1:J1')
 
-    headers = ['No', '주문번호', '구분', '배송완료일', '결제상태', '통화', '외화금액', '환율', '원화금액']
+    headers = ['No', '주문번호', '구분', '배송완료일', '결제상태', '통화', '외화금액', '환율', '원화금액', '상품명']
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=3, column=col, value=h)
         _style(c, font=FONT_BOLD, fill=HEADER_FILL, align=CENTER, border=THIN_BORDER)
 
-    # 정상 건과 미반영 건을 원본 파일 순서(row_index)대로 한 표에 표시합니다.
-    merged = [dict(it, _counted=True) for it in shopify_data.get('items', [])]
-    merged += [dict(it, _counted=False) for it in shopify_data.get('skipped_items', [])]
-    merged.sort(key=lambda it: (it.get('row_index') if it.get('row_index') is not None else 10 ** 9))
+    def _order_key(it):
+        return it.get('row_index') if it.get('row_index') is not None else 10 ** 9
 
-    total_fx = 0.0
-    total_krw = 0
-    row = 3
-    for no, it in enumerate(merged, 1):
-        row += 1
+    def _write_row(row, no, it, counted):
         cur = it.get('currency', 'USD')
         amount = float(it.get('amount', 0) or 0)
-        if it['_counted']:
+        if counted:
             rate = _get_rate(rates, cur, it.get('date', ''))
             krw = round(amount * rate / RATE_DIVISOR.get(cur, 1))
-            total_fx += amount
-            total_krw += krw
-            vals = [no, it.get('order_name', ''), '', it.get('date', ''),
-                    it.get('financial_status', ''), cur, amount, rate, krw]
         else:
-            vals = [no, it.get('order_name', ''), _skip_reason_label(it.get('skip_reason')),
-                    it.get('date', ''), it.get('financial_status', ''), cur, amount, None, None]
+            rate = krw = None
+        vals = [no, it.get('order_name', ''),
+                '' if counted else _skip_reason_label(it.get('skip_reason')),
+                it.get('date', ''), it.get('financial_status', ''), cur, amount, rate, krw,
+                it.get('item_name', '')]
         for col, value in enumerate(vals, 1):
             c = ws.cell(row=row, column=col, value=value)
             nf = {7: NUM_FMT2, 8: _applied_rate_format(cur), 9: NUM_FMT}.get(col)
             _style(c,
-                   font=SKIP_FONT if (not it['_counted'] and col == 3) else FONT_DEFAULT,
-                   fill=None if it['_counted'] else GRAY_FILL,
-                   align=RIGHT if col in (7, 8, 9) else CENTER,
+                   font=SKIP_FONT if (not counted and col == 3) else FONT_DEFAULT,
+                   fill=None if counted else GRAY_FILL,
+                   align=RIGHT if col in (7, 8, 9) else (LEFT if col == 10 else CENTER),
                    border=THIN_BORDER, num_format=nf)
+        return amount, krw
 
-    total_row = row + 2
-    ws.cell(total_row, 1, '합계(매출 반영)')
-    ws.cell(total_row, 7, total_fx)
-    ws.cell(total_row, 9, total_krw)
-    for col in range(1, 10):
-        c = ws.cell(total_row, col)
+    # 1) 매출 반영 건
+    total_fx = 0.0
+    total_krw = 0
+    row = 3
+    no = 0
+    for it in sorted(shopify_data.get('items', []), key=_order_key):
+        row += 1
+        no += 1
+        amount, krw = _write_row(row, no, it, counted=True)
+        total_fx += amount
+        total_krw += krw
+
+    # 2) 합계(매출 반영)
+    row += 1
+    ws.cell(row, 1, '합계(매출 반영)')
+    ws.cell(row, 7, total_fx)
+    ws.cell(row, 9, total_krw)
+    for col in range(1, 11):
+        c = ws.cell(row, col)
         nf = {7: NUM_FMT2, 9: NUM_FMT}.get(col)
         _style(c, font=FONT_BOLD, fill=GRAY_FILL, align=RIGHT if col in (7, 9) else CENTER,
                border=THIN_BORDER, num_format=nf)
+
+    # 3) 미반영 건 — refunded → voided → 미배송 순으로 그룹
+    reason_rank = {'refunded': 0, 'voided': 1, 'unfulfilled': 2}
+    skipped = sorted(shopify_data.get('skipped_items', []),
+                     key=lambda it: (reason_rank.get(str(it.get('skip_reason')), 9), _order_key(it)))
+    if skipped:
+        row += 1  # 합계와 미반영 그룹 사이 한 줄 공백
+        for it in skipped:
+            row += 1
+            no += 1
+            _write_row(row, no, it, counted=False)
 
 
 

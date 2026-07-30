@@ -179,6 +179,7 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
     i_fulfilled = index.get("fulfilledat")
     i_currency = index.get("currency")
     i_total = index.get("total")
+    i_item_name = index.get("lineitemname")
 
     data_rows = []
     row_flags = []
@@ -188,7 +189,8 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
     skipped_by_reason = {}
     skipped_items = []
 
-    def _skip(reason, amount, currency, order_name="", status="", fulfilled_date="", row_index=None):
+    def _skip(reason, amount, currency, order_name="", status="", fulfilled_date="",
+              row_index=None, item_name=""):
         b = skipped_by_reason.setdefault(reason, {"count": 0, "fx": 0.0, "currency": currency})
         b["count"] += 1
         b["fx"] = round(b["fx"] + float(amount or 0), 2)
@@ -199,6 +201,7 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
             "currency": currency,
             "qty": 1,
             "amount": float(amount or 0),
+            "item_name": item_name,
             "skip_reason": reason,
             "row_index": row_index,
         })
@@ -236,6 +239,7 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         order_name = _text(values[i_name]) if i_name is not None else ""
         currency = (_text(values[i_currency]).upper() if i_currency is not None else "") or "USD"
         status = _text(values[i_status]) if i_status is not None else ""
+        item_name = _text(values[i_item_name]) if i_item_name is not None else ""
 
         if not amount:
             # 같은 주문의 2번째 이후 라인아이템 행 — 금액이 비어 있어 매출이 아닙니다.
@@ -246,13 +250,13 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         status_key = status.strip().lower()
         if status_key == "refunded":
             # 전액환불 — 배송 여부와 무관하게 매출 미반영.
-            _skip("refunded", amount, currency, order_name, status, fulfilled_date, row_index)
+            _skip("refunded", amount, currency, order_name, status, fulfilled_date, row_index, item_name)
             row_flags.append({"index": row_index, "date": fulfilled_date, "counted": False, "reason": "refunded"})
             continue
         if not fulfilled_date:
             # 배송이 이루어지지 않은 건 — voided(취소)와 그 외(unfulfilled)를 구분해 집계합니다.
             reason = "voided" if status_key == "voided" else "unfulfilled"
-            _skip(reason, amount, currency, order_name, status, "", row_index)
+            _skip(reason, amount, currency, order_name, status, "", row_index, item_name)
             row_flags.append({"index": row_index, "date": "", "counted": False, "reason": reason})
             continue
 
@@ -267,6 +271,7 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
             "currency": currency,
             "qty": 1,
             "amount": float(amount),
+            "item_name": item_name,
             "row_index": row_index,
             "source_file": path.name,
             "rate_basis": "daily",
