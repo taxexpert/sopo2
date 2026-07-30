@@ -34,6 +34,7 @@ TRACKING_NO_PATTERN = re.compile(r"^[A-Z]{2}[A-Z0-9]{13}$", re.I)
 
 # 수출실적명세서/통화 시트의 수출신고번호는 공란, 기타영세율건수는 1로 신고합니다.
 # 영세율첨부서류제출명세서의 L/C 번호 칸에는 증빙 식별을 위해 운송장번호를 입력합니다.
+# (v54 확정 규칙 — docs/HANDOFF_V54.md §7.2·§8. 대상 신고 시스템 확인 전까지 유지)
 
 HEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
 THIN_BORDER = Border(
@@ -92,6 +93,11 @@ def is_valid_tracking_no(value):
 
 
 def other_zero_rate_count_value(value=None):
+    """기타영세율건수 — v54 확정 규칙으로 행당 1 (docs/HANDOFF_V54.md §8).
+
+    실제 공급 거래 단위의 집계 규칙은 대상 신고 프로그램·세무대리인 확인
+    전까지 미확정이므로, 값을 바꾸려면 정책 확인이 먼저 필요합니다.
+    """
     return 1
 
 
@@ -146,7 +152,12 @@ def _company_name(shopee_results, lazada_result, qoo10_result, ebay_results=None
 
 def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, ebay_results=None,
                            joom_results=None, shopify_results=None):
-    """선택 문서 생성에 공통으로 쓰는 수출/영세율 행 목록 생성."""
+    """선택 문서 생성에 공통으로 쓰는 수출/영세율 행 목록 생성.
+
+    출력 엑셀의 모든 기준일(발급일자 포함)은 선적일자(기적일)를 사용합니다
+    — 사용자 확정 정책(2026-07-30, docs/POLICY.md). 발급일자를 문서
+    작성일(write_date)로 분리하지 않습니다.
+    """
     rows = []
 
     for sd in shopee_results or []:
@@ -163,7 +174,7 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                 "issuer": tx.get("carrier") or sd.get("carrier") or "주)두라로지스틱스",
                 "tracking_no": tracking,
                 "export_no": "",
-                "other_count": 1,
+                "other_count": other_zero_rate_count_value(),
                 "ship_date": ship_date,
                 "issue_date": ship_date,
                 "currency": cur,
@@ -188,7 +199,7 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                 "issuer": it.get("carrier") or lazada_result.get("carrier") or "라자다",
                 "tracking_no": tracking,
                 "export_no": "",
-                "other_count": 1,
+                "other_count": other_zero_rate_count_value(),
                 "ship_date": ship_date,
                 "issue_date": ship_date,
                 "currency": cur,
@@ -213,7 +224,7 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                 "issuer": it.get("carrier") or er.get("carrier") or "린코스(주)",
                 "tracking_no": it.get("tracking_no", ""),
                 "export_no": "",
-                "other_count": 1,
+                "other_count": other_zero_rate_count_value(),
                 "ship_date": ship_date,
                 "issue_date": ship_date,
                 "currency": cur,
@@ -242,7 +253,7 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                     "issuer": it.get("carrier") or res.get("carrier") or issuer_default,
                     "tracking_no": it.get("tracking_no", "") or it.get("order_name", "") or it.get("order_id", ""),
                     "export_no": "",
-                    "other_count": 1,
+                    "other_count": other_zero_rate_count_value(),
                     "ship_date": ship_date,
                     "issue_date": ship_date,
                     "currency": cur,
@@ -252,6 +263,8 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                 })
 
     if qoo10_result:
+        # 큐텐은 발급일자·선적일자 모두 거래기간 반기말 — 작성일 사용 금지
+        # (docs/HANDOFF_V54.md §4.4, 금지 회귀 3)
         q_entries = qoo10_result.get("entries") or [{
             "tracking_no": qoo10_result.get("tracking_no", ""),
             "qty": qoo10_result.get("qty", 0),
@@ -279,7 +292,7 @@ def build_declaration_rows(shopee_results, lazada_result, qoo10_result, rates, e
                 "issuer": qoo10_result.get("carrier", "국제로지스틱"),
                 "tracking_no": tracking,
                 "export_no": "",
-                "other_count": 1,
+                "other_count": other_zero_rate_count_value(),
                 "ship_date": ship_date,
                 "issue_date": ship_date,
                 "currency": "JPY",
@@ -389,15 +402,45 @@ def _write_zero_sheet(ws, rows):
             ws.cell(idx, c).number_format = "#,##0"
 
 
+# 저장소 실제 파일명을 우선 조회하고, v54 zip 구명칭은 읽기 호환 폴백으로만 허용
+ZERO_TEMPLATE_FILENAMES = (
+    "영세율첨부서류제출명세서 양식.xlsx",
+    "영세율첨부서류명세서 양식.xlsx",
+)
+ZERO_SHEET_HEADERS1 = ["구분", "서류명", "발급자", "발급일자", "선적일자", "L/C 번호", "비고", "통화코드", "환율", "당기 제출 금액", "", "당기 신고 해당분", "", "당기 신고 미도래 금액", ""]
+ZERO_SHEET_HEADERS2 = ["", "", "", "", "", "", "", "", "", "외화", "원화", "외화", "원화", "외화", "원화"]
+
+
+def _find_zero_template(base_dir: Path) -> Optional[Path]:
+    for name in ZERO_TEMPLATE_FILENAMES:
+        found = _find_template(base_dir, name)
+        if found:
+            return found
+    return None
+
+
+def _validate_zero_template(ws, template_path: Path):
+    """저장된 양식의 1~2행 헤더가 기대 15열 스키마와 다르면 생성을 중단합니다.
+
+    스키마가 다른 양식으로 조용히 대체 생성하지 않습니다 (검증/해결방안.md §6).
+    """
+    for row, expected in ((1, ZERO_SHEET_HEADERS1), (2, ZERO_SHEET_HEADERS2)):
+        for col, exp in enumerate(expected, 1):
+            actual = re.sub(r"\s+", " ", str(ws.cell(row, col).value or "")).strip()
+            if actual != re.sub(r"\s+", " ", exp).strip():
+                raise ValueError(
+                    f"영세율 양식 헤더가 기대 스키마와 다릅니다: {template_path.name} "
+                    f"{row}행 {col}열 '{actual}' (기대 '{exp}'). 양식 파일을 확인해 주세요."
+                )
+
+
 def _new_zero_template():
     wb = Workbook()
     ws = wb.active
     ws.title = "영세율첨부서류입력"
-    headers1 = ["구분", "서류명", "발급자", "발급일자", "선적일자", "L/C 번호", "비고", "통화코드", "환율", "당기 제출 금액", "", "당기 신고 해당분", "", "당기 신고 미도래 금액", ""]
-    headers2 = ["", "", "", "", "", "", "", "", "", "외화", "원화", "외화", "원화", "외화", "원화"]
-    for c, h in enumerate(headers1, 1):
+    for c, h in enumerate(ZERO_SHEET_HEADERS1, 1):
         ws.cell(1, c, h)
-    for c, h in enumerate(headers2, 1):
+    for c, h in enumerate(ZERO_SHEET_HEADERS2, 1):
         ws.cell(2, c, h)
     _style_header(ws, 1, 15)
     _style_header(ws, 2, 15)
@@ -423,7 +466,12 @@ def create_zero_rate_attachments(
     """
     output_dir = Path(output_dir)
     base_dir = Path(base_dir or output_dir)
-    template = _find_template(base_dir, "영세율첨부서류명세서 양식.xlsx")
+    template = _find_zero_template(base_dir)
+    if template:
+        _validate_zero_template(load_workbook(template).active, template)
+    else:
+        print("[경고] forms 폴더에서 영세율첨부서류제출명세서 양식을 찾지 못해 "
+              "기본 생성 양식을 사용합니다.")
     created = []
 
     normalized_mode = str(mode or "both").strip().lower()

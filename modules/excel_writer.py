@@ -51,8 +51,9 @@ NUM_FMT2 = '#,##0.00'     # 일반 소수/환율
 NUM_FMT4 = '#,##0.0000'   # JPY·IDR·VND 1통화 단위 적용환율
 HUNDRED_UNIT_CURRENCIES = {'JPY', 'IDR', 'VND'}
 
-# L/C 번호 또는 수출신고번호에는 운송장번호를 넣지 않습니다.
-# 영세율 증빙은 기타영세율건수 1로 신고합니다.
+# 수출실적명세서의 수출신고번호는 공란, 기타영세율건수는 1로 신고합니다.
+# 영세율첨부서류의 L/C 번호 칸에는 운송장번호를 입력합니다
+# (v54 확정 규칙 — docs/HANDOFF_V54.md §7.2·§8. 대상 신고 시스템 확인 전까지 유지).
 TRACKING_NO_PATTERN = re.compile(r"^[A-Z]{2}[A-Z0-9]{13}$", re.I)
 
 def is_valid_tracking_no(value):
