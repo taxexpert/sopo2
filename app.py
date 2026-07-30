@@ -73,6 +73,13 @@ st.markdown(
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
 
+/* 화면 글자 크기의 기준값입니다. Streamlit 내부 크기와 아래 지정이 모두 rem이라
+   본문·설명글·버튼·표가 함께 비례합니다. 브라우저 기본값 16px에는 규칙이 없어 이 한 줄로 잡힙니다.
+   config.toml의 theme.baseFontSize로 하면 안 됩니다. [theme] 섹션을 선언하는 순간
+   Streamlit이 브라우저의 밝음/어둠 설정을 따르지 않고 밝은 테마로 고정돼,
+   아래 prefers-color-scheme 규칙과 어긋나 흰 배경에 밝은 글자가 됩니다. */
+html { font-size: 17px; }
+
 /* 색은 엑스퍼트 로고에서 가져온 두 가지뿐입니다.
    브랜드 블루가 강조를 맡고 하늘색이 보조로 받칩니다. 중성색도 회색 대신 파랑 기미를 둡니다. */
 :root {
@@ -143,6 +150,12 @@ st.markdown(
     max-height:320px; overflow:auto; white-space:pre-wrap; }
 div[data-testid="stColumn"] .stButton > button { white-space:nowrap !important; }
 
+/* ── 접기 구획 ── */
+/* 두 곳(큐텐재팬 목록·파일명 규칙)이 단계 머리와 같은 괘선색을 쓰도록 맞춥니다.
+   글자 크기는 지정하지 않습니다. summary가 inherit이라 기준 크기를 이미 따릅니다. */
+.stApp [data-testid="stExpander"] details { border-color:var(--line); border-radius:6px; }
+.stApp [data-testid="stExpander"] summary { font-weight:600; color:var(--ink); }
+
 /* 기본 동작 버튼은 Streamlit 기본 빨강 대신 문서 강조색을 씁니다. */
 .stApp .stButton button[kind="primary"]:not(:disabled),
 .stApp .stFormSubmitButton button[kind="primary"]:not(:disabled),
@@ -193,7 +206,7 @@ PARCEL_MARK = (
     '<path class="mark-tape" d="M16 8.5V27.5"/></svg>'
 )
 REPO_LINK = (
-    '<a class="repo-link" href="https://github.com/taxexpert/sopo" target="_blank" '
+    '<a class="repo-link" href="https://github.com/taxexpert/sopo2" target="_blank" '
     'rel="noopener noreferrer" title="GitHub 저장소" aria-label="GitHub 저장소 열기">'
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 '
     '2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94'
@@ -277,6 +290,9 @@ if "result_files" not in st.session_state:
     st.session_state.result_files = []
 if "qoo10_auto_imported_keys" not in st.session_state:
     st.session_state.qoo10_auto_imported_keys = set()
+# 큐텐 구획은 기본으로 접혀 있습니다. 담당자가 한 번 손대면 그 세션 동안 열어 둡니다.
+if "qoo10_panel_open" not in st.session_state:
+    st.session_state.qoo10_panel_open = False
 
 # 파일명으로 구분되지 않는 PDF에만 직접 선택 항목을 표시합니다.
 # 일반 화면의 문구와 배치는 v38과 동일하게 유지합니다.
@@ -300,14 +316,23 @@ FILE_TYPE_LABELS = {
 # STEP 1 — PDF / Excel 업로드
 # ══════════════════════════════════════════════════════════════════
 step_head(1, "수령증·주문내역 올리기", lead=True)
-c_desc, c_reset = st.columns([6, 1])
-c_desc.caption("쇼피·라자다·큐텐재팬·이베이(린코스)·Joom PDF와 라자다 주문내역 Excel, 쇼피파이 orders CSV를 한꺼번에 올려주세요.")
+# 캡션이 한 줄일 때는 캡션이, 두 줄로 감길 때는 버튼이 서로의 중심선에 맞습니다.
+# CSS로 margin을 박으면 둘 중 한쪽에서 반드시 어긋나므로 열 정렬 인자를 씁니다.
+c_desc, c_reset = st.columns([5, 1], vertical_alignment="center")
+c_desc.caption("쇼피·라자다·큐텐재팬·이베이(린코스)·Joom PDF, 라자다 주문내역 Excel, 쇼피파이 orders CSV를 함께 올릴 수 있습니다.")
 if c_reset.button("초기화"):
     st.session_state.uploader_key += 1
     st.session_state.qoo10_entries = []
     st.session_state.result_files = []
     st.session_state.qoo10_auto_imported_keys = set()
+    # 자동으로 펼쳐진 구획은 이때 다시 접힙니다. 담당자가 직접 펼친 경우에는
+    # Streamlit이 그 선택을 기억해 계속 열어 두므로 접히지 않습니다.
+    st.session_state.qoo10_panel_open = False
     st.rerun()
+
+note("플랫폼·배송업체가 발행한 정해진 서식의 수령증·주문내역만 읽습니다. "
+     "직접 만든 집계표나 서식이 다른 자료, 화면을 캡처한 이미지는 인식하지 못합니다. "
+     "서식이 다르면 파일 목록에 '미확인'으로 표시됩니다.")
 
 uploaded_files = st.file_uploader(
     "PDF · Excel · CSV 파일 선택",
@@ -426,7 +451,7 @@ if uploaded_files:
 # STEP 2 — 큐텐재팬 정보 입력
 # ══════════════════════════════════════════════════════════════════
 step_head(2, "큐텐재팬 정보 확인")
-note("큐텐재팬 PDF를 올리면 아래 목록에 자동으로 채워집니다. 빠진 건은 직접 추가해주세요.")
+
 
 def _fmt_date(v: str) -> str:
     d = re.sub(r"\D", "", str(v or ""))
@@ -434,52 +459,80 @@ def _fmt_date(v: str) -> str:
         return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
     return str(v or "").strip()
 
-with st.form("qoo10_add_form", clear_on_submit=True):
-    fp1, fp2 = st.columns(2)
-    in_ps = fp1.text_input("거래기간 시작일", placeholder="예: 20260101")
-    in_pe = fp2.text_input("거래기간 종료일", placeholder="예: 20260131")
-    fc1, fc2, fc3, fc4 = st.columns(4)
-    in_amount = fc1.number_input("금액(JPY)", min_value=0, value=0, format="%d")
-    in_qty = fc2.number_input("건수", min_value=0, value=0, format="%d")
-    in_track = fc3.text_input("발송번호", placeholder="예: K2512244647017")
-    in_wdate = fc4.text_input("발행일", placeholder="예: 20260205")
-    added = st.form_submit_button("목록에 추가", use_container_width=True)
 
-if added:
-    if in_amount > 0 or in_qty > 0 or in_track.strip():
-        st.session_state.qoo10_entries.append({
-            "period_start": _fmt_date(in_ps),
-            "period_end": _fmt_date(in_pe),
-            "tracking_no": in_track.strip(),
-            "qty": int(in_qty),
-            "amount": float(in_amount),
-            "write_date": _fmt_date(in_wdate),
+def _open_qoo10_panel() -> None:
+    """추가 버튼을 누르면 경고나 결과가 접힌 채 묻히지 않도록 구획을 열어 둡니다."""
+    st.session_state.qoo10_panel_open = True
+
+
+# 라벨에 건수를 드러내야 열지 않고도 안에 무엇이 있는지 알 수 있습니다.
+# STEP 1의 자동입력이 이 지점보다 먼저 실행되므로, 큐텐 PDF를 올린 그 실행에서 바로 펼쳐집니다.
+_qoo10_count = len(st.session_state.qoo10_entries)
+_qoo10_label = (
+    f"큐텐재팬 입력 목록 ({_qoo10_count}건)" if _qoo10_count
+    else "큐텐재팬 입력 목록 (0건) · 큐텐 자료가 없으면 넘어가세요"
+)
+
+with st.expander(
+    _qoo10_label,
+    expanded=bool(_qoo10_count) or st.session_state.qoo10_panel_open,
+):
+    note("큐텐재팬 PDF를 올리면 아래 목록에 자동으로 채워집니다. 빠진 건은 직접 추가해주세요.")
+
+    with st.form("qoo10_add_form", clear_on_submit=True):
+        fp1, fp2 = st.columns(2)
+        in_ps = fp1.text_input("거래기간 시작일", placeholder="예: 20260101")
+        in_pe = fp2.text_input("거래기간 종료일", placeholder="예: 20260131")
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        in_amount = fc1.number_input("금액(JPY)", min_value=0, value=0, format="%d")
+        in_qty = fc2.number_input("건수", min_value=0, value=0, format="%d")
+        in_track = fc3.text_input("발송번호", placeholder="예: K2512244647017")
+        in_wdate = fc4.text_input("발행일", placeholder="예: 20260205")
+        # 접힌 구획도 내용을 렌더링하지만 inert로 가려지므로, 유효성 경고가 묻히지 않도록
+        # 제출 시점에 구획을 열어 둡니다. 목록이 비면 접히는 조건과 맞물리는 지점입니다.
+        added = st.form_submit_button(
+            "목록에 추가", use_container_width=True, on_click=_open_qoo10_panel
+        )
+
+    if added:
+        if in_amount > 0 or in_qty > 0 or in_track.strip():
+            st.session_state.qoo10_entries.append({
+                "period_start": _fmt_date(in_ps),
+                "period_end": _fmt_date(in_pe),
+                "tracking_no": in_track.strip(),
+                "qty": int(in_qty),
+                "amount": float(in_amount),
+                "write_date": _fmt_date(in_wdate),
+            })
+            # 라벨의 건수는 이 지점보다 앞에서 계산되므로, 다시 그려야 표와 숫자가 맞습니다.
+            st.rerun()
+        else:
+            st.warning("금액·건수·발송번호 중 하나는 입력해야 합니다.")
+
+    if st.session_state.qoo10_entries:
+        visible_cols = ["period_start", "period_end", "tracking_no", "qty", "amount", "write_date"]
+        df_show = pd.DataFrame(st.session_state.qoo10_entries)[visible_cols].rename(columns={
+            "period_start": "거래기간 시작",
+            "period_end": "거래기간 종료",
+            "tracking_no": "발송번호",
+            "qty": "건수",
+            "amount": "금액(JPY)",
+            "write_date": "발행일",
         })
+        df_show.index = range(1, len(df_show) + 1)
+        df_show["금액(JPY)"] = df_show["금액(JPY)"].map(lambda x: f"{int(x):,}")
+        df_show["건수"] = df_show["건수"].map(lambda x: f"{int(x):,}")
+        st.table(df_show)
+        total_amt = sum(e["amount"] for e in st.session_state.qoo10_entries)
+        total_qty = sum(e["qty"] for e in st.session_state.qoo10_entries)
+        st.caption(f"합계: {len(st.session_state.qoo10_entries)}건 / 수량 {int(total_qty):,} / 금액 {int(total_amt):,} JPY")
+        if st.button("목록 전체 지우기"):
+            st.session_state.qoo10_entries = []
+            # 지운 결과(0건·빈 상태 문구)를 보여줘야 처리됐다는 확인이 됩니다.
+            st.session_state.qoo10_panel_open = True
+            st.rerun()
     else:
-        st.warning("금액·건수·발송번호 중 하나는 입력해야 합니다.")
-
-if st.session_state.qoo10_entries:
-    visible_cols = ["period_start", "period_end", "tracking_no", "qty", "amount", "write_date"]
-    df_show = pd.DataFrame(st.session_state.qoo10_entries)[visible_cols].rename(columns={
-        "period_start": "거래기간 시작",
-        "period_end": "거래기간 종료",
-        "tracking_no": "발송번호",
-        "qty": "건수",
-        "amount": "금액(JPY)",
-        "write_date": "발행일",
-    })
-    df_show.index = range(1, len(df_show) + 1)
-    df_show["금액(JPY)"] = df_show["금액(JPY)"].map(lambda x: f"{int(x):,}")
-    df_show["건수"] = df_show["건수"].map(lambda x: f"{int(x):,}")
-    st.table(df_show)
-    total_amt = sum(e["amount"] for e in st.session_state.qoo10_entries)
-    total_qty = sum(e["qty"] for e in st.session_state.qoo10_entries)
-    st.caption(f"합계: {len(st.session_state.qoo10_entries)}건 / 수량 {int(total_qty):,} / 금액 {int(total_amt):,} JPY")
-    if st.button("목록 전체 지우기"):
-        st.session_state.qoo10_entries = []
-        st.rerun()
-else:
-    st.caption("아직 추가된 큐텐재팬 건이 없습니다.")
+        st.caption("아직 추가된 큐텐재팬 건이 없습니다.")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 3 — 생성 문서 선택 및 환율 안내
