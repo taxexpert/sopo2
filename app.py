@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
@@ -44,6 +44,12 @@ from modules.extra_docs import (
     create_export_performance,
     create_zero_rate_attachments,
     safe_filename,
+)
+from modules.reporting_period import (
+    PeriodStraddleError,
+    apply_reporting_period,
+    format_exclusion_lines,
+    period_presets,
 )
 
 CURRENCIES = ["MYR", "PHP", "SGD", "THB", "TWD", "VND", "IDR", "JPY", "BRL", "MXN", "USD", "EUR", "GBP", "CAD", "AUD"]
@@ -539,9 +545,48 @@ with st.expander(
         st.caption("아직 추가된 큐텐재팬 건이 없습니다.")
 
 # ══════════════════════════════════════════════════════════════════
-# STEP 3 — 생성 문서 선택 및 환율 안내
+# STEP 3 — 신고기간 확인
 # ══════════════════════════════════════════════════════════════════
-step_head(3, "만들 문서 고르기")
+step_head(3, "신고기간 확인")
+
+_period_mode = st.radio(
+    "신고기간 지정 방식",
+    ["전체 (기간 제한 없음)", "반기·분기", "직접 입력"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+report_period_start = ""
+report_period_end = ""
+_this_year = date.today().year
+
+if _period_mode == "반기·분기":
+    pc1, pc2 = st.columns([1, 2])
+    _year = pc1.number_input("연도", min_value=2000, max_value=2100,
+                             value=_this_year, step=1, format="%d")
+    _presets = period_presets(int(_year))
+    _label = pc2.selectbox("기간", list(_presets))
+    report_period_start, report_period_end = _presets[_label]
+elif _period_mode == "직접 입력":
+    pc1, pc2 = st.columns(2)
+    _start = pc1.date_input("시작일", value=date(_this_year, 1, 1), format="YYYY-MM-DD")
+    _end = pc2.date_input("종료일", value=date(_this_year, 6, 30), format="YYYY-MM-DD")
+    if _start > _end:
+        st.error("시작일이 종료일보다 늦습니다.")
+    report_period_start, report_period_end = _start.isoformat(), _end.isoformat()
+
+if report_period_start and report_period_end:
+    note(f"신고기간 <b>{html.escape(report_period_start)} ~ {html.escape(report_period_end)}</b> — "
+         "선적일자(기적일)가 이 범위 안인 거래만 반영합니다. 시작일과 종료일은 모두 포함하며, "
+         "범위 밖 거래는 사유와 함께 처리 로그에 남깁니다.")
+else:
+    note("업로드한 자료를 기간 제한 없이 모두 반영합니다. 신고기간을 지정하면 선적일자 기준으로 "
+         "해당분만 반영하고 이전기간·미도래·날짜없음 건을 따로 보여줍니다.")
+
+# ══════════════════════════════════════════════════════════════════
+# STEP 4 — 생성 문서 선택 및 환율 안내
+# ══════════════════════════════════════════════════════════════════
+step_head(4, "만들 문서 고르기")
 cc1, cc2, cc3 = st.columns(3)
 make_sales = cc1.checkbox("매출집계", value=True)
 make_zero = cc2.checkbox("영세율첨부서류제출명세서", value=True)
@@ -559,9 +604,9 @@ if make_zero:
 note("환율은 서울외국환중개 매매기준율에서 자동으로 가져옵니다. 이미 받아 둔 구간은 캐시를 쓰고 모자란 구간만 새로 조회합니다.")
 
 # ══════════════════════════════════════════════════════════════════
-# STEP 4 — 처리 시작
+# STEP 5 — 처리 시작
 # ══════════════════════════════════════════════════════════════════
-step_head(4, "생성")
+step_head(5, "생성")
 has_process_input = bool(uploaded_files) or bool(st.session_state.qoo10_entries)
 process_btn = st.button(
     "엑셀 파일 생성",
@@ -853,6 +898,34 @@ if process_btn:
                 raise RuntimeError("처리할 데이터가 없습니다. PDF/Excel/CSV 또는 큐텐 수동 입력을 확인해 주세요.")
             log(f"✅ 파일 분석 완료 ({time.perf_counter() - t_pdf:.1f}초)")
 
+            # 신고기간 분류 — 매출집계·신고서류·환율 범위가 모두 같은 거래집합을 쓰도록
+            # 소비자로 갈라지기 전 이 지점에서 한 번만 거릅니다.
+            try:
+                scoped = apply_reporting_period(
+                    shopee_results=shopee_results, lazada_result=lazada_result,
+                    qoo10_result=qoo10_result, ebay_results=ebay_results,
+                    joom_results=joom_results, shopify_results=shopify_results,
+                    start=report_period_start, end=report_period_end,
+                )
+            except PeriodStraddleError as exc:
+                for line in str(exc).splitlines():
+                    log(f"[STOP] {line}")
+                raise
+            shopee_results = scoped["shopee_results"]
+            lazada_result = scoped["lazada_result"]
+            qoo10_result = scoped["qoo10_result"]
+            ebay_results = scoped["ebay_results"]
+            joom_results = scoped["joom_results"]
+            shopify_results = scoped["shopify_results"]
+            for line in format_exclusion_lines(scoped["report"]):
+                log(line)
+            if not (shopee_results or lazada_result or qoo10_result or ebay_results
+                    or joom_results or shopify_results):
+                raise RuntimeError(
+                    f"신고기간({report_period_start} ~ {report_period_end})에 해당하는 거래가 "
+                    "없습니다. 기간을 다시 확인하거나 STEP 3에서 '전체'를 선택해 주세요."
+                )
+
             # 환율 수집
             daily_needed = _needed_currencies(shopee_results, lazada_result, qoo10_result,
                                               joom_results=joom_results, shopify_results=shopify_results)
@@ -972,7 +1045,7 @@ if process_btn:
             st.exception(e)
 
 if st.session_state.result_files:
-    step_head(5, "내려받기")
+    step_head(6, "내려받기")
     for i, f in enumerate(st.session_state.result_files):
         st.download_button(
             f["name"],
