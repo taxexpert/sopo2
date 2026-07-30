@@ -383,7 +383,8 @@ def write_shopee_sheet(ws, shopee_data: dict, rates: dict, submitter: dict = Non
     쇼피(MYR) 등 국가별 쇼피 시트 작성
     환율: 소포수령증 발행일(write_date) 기준
     """
-    col_widths = [16, 3, 3, 12, 3, 3, 20, 3, 3, 3, 5, 3, 5, 3, 3, 12, 3, 10, 10]
+    # S열은 원화 총합(천만 단위)이 들어가므로 13 이상이어야 ###이 나지 않습니다.
+    col_widths = [16, 3, 3, 12, 3, 3, 20, 3, 3, 3, 5, 3, 5, 3, 3, 12, 3, 10, 13]
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -506,9 +507,13 @@ def write_shopee_sheet(ws, shopee_data: dict, rates: dict, submitter: dict = Non
 
         row += 1
 
-    # 원화 합계
+    # 섹션 3 제목 오른쪽의 참고 합계 — 외화는 너비 3짜리 Q열 단독으로는 ###이 되므로
+    # P10:Q10을 병합해 표시하고, 서식을 지정합니다. (섹션 제목 병합은 A10:O10이라 충돌 없음)
+    ws.merge_cells('P10:Q10')
+    ws['P10'] = shopee_data.get('total_amount', 0.0)
     ws['S10'] = total_krw
-    ws['Q10'] = shopee_data.get('total_amount', 0.0)
+    _style(ws['P10'], font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT2)
+    _style(ws['S10'], font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT)
 
     # ── 푸터 ──
     footer_row = row + 1
@@ -558,8 +563,9 @@ def write_currency_template_sheet(ws, currency: str,
     ws.column_dimensions['C'].width = 12
     ws.column_dimensions['D'].width = 8
     ws.column_dimensions['E'].width = 10
-    ws.column_dimensions['F'].width = 14
-    ws.column_dimensions['G'].width = 14
+    # VND처럼 외화가 1억 단위(11자+콤마)인 통화가 있어 16 이상이 필요합니다.
+    ws.column_dimensions['F'].width = 16
+    ws.column_dimensions['G'].width = 16
 
     # 라자다 PDF는 기간평균환율, 주문내역 Excel은 deliveredDate 일별환율을 사용합니다.
     lazada_avg_rate = _applied_rate_value(
@@ -1277,6 +1283,11 @@ def write_qoo10_sheet(ws, qoo10_data: Optional[dict], jpy_rate: float, submitter
     큐텐(소포수령증) 시트
     jpy_rate: 큐텐 반기말(6월/12월) 공식 월평균환율의 대표값 (1엔 기준)
     """
+    # 금액(JPY)·원화가 수천만 단위까지 가므로 명시 너비가 없으면 ###이 됩니다.
+    for _col, _w in {'A': 16, 'B': 14, 'C': 12, 'D': 12, 'E': 18,
+                     'F': 10, 'G': 14, 'H': 12, 'I': 14}.items():
+        ws.column_dimensions[_col].width = _w
+
     ws['A1'] = '해외배송 소포 수령증'
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
 
@@ -1386,7 +1397,8 @@ def write_summary_sheet(ws, shopee_totals: dict, lazada_totals: dict,
     NUM  = '#,##0'
     NUM2 = '#,##0.00'
     ws.column_dimensions['B'].width = 16
-    ws.column_dimensions['C'].width = 14
+    # 외화 열은 VND 1억 단위(콤마 포함 11자 이상)까지 수용해야 합니다.
+    ws.column_dimensions['C'].width = 16
     ws.column_dimensions['D'].width = 16
 
     sub = submitter or DEFAULT_SUBMITTER
@@ -2227,6 +2239,9 @@ def generate_excel(
     # ── JPY 수출신고 시트 (큐텐 데이터가 있을 때만 생성) ──
     if qoo10_used:
         ws_jpy = wb.create_sheet('JPY')
+        # 반기 합산 JPY는 외화·원화가 수천만 단위까지 가므로 기본 너비(8.43)로는 ###이 됩니다.
+        for _col, _w in {'A': 14, 'B': 14, 'C': 12, 'D': 9, 'E': 10, 'F': 14, 'G': 14}.items():
+            ws_jpy.column_dimensions[_col].width = _w
         headers = ['수출신고번호', '기타영세율건수', '선(기)적일자', '통화코드', '환율', '외화금액', '원화금액']
         for col, h in enumerate(headers, 1):
             c = ws_jpy.cell(row=4, column=col, value=h)

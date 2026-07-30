@@ -13,6 +13,7 @@
   [A] 원화 합계 = expected_total_krw               (원화를 제대로 파악했는가)
   [B] 반영 + 사유별 미반영 + 라인아이템 = 전체 행   (input 전 건이 설명되는가)
   [C] 문서 자체 합계 vs 건별 합산                   (서로 다른 2가지 체크 방식)
+  [D] 열 너비 오버플로(###) 검사                    (숫자 셀이 열 너비보다 넓지 않은가)
 """
 
 import sys
@@ -20,11 +21,14 @@ import glob
 import json
 import contextlib
 import io
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import openpyxl  # noqa: E402
+from openpyxl.utils import get_column_letter  # noqa: E402
 import pandas as pd  # noqa: E402
 from modules.pdf_parser import parse_pdf  # noqa: E402
 from modules.lazada_order_parser import parse_lazada_order_excel  # noqa: E402
@@ -188,6 +192,83 @@ def check_shopify(rates):
            f'{total:,} vs {exp["expected_total_krw"]:,}')
 
 
+def _overflow_cells(workbook_path):
+    """숫자 셀의 서식 표시폭이 열 너비(병합 폭 합산)를 넘는 셀을 찾습니다 (### 위험)."""
+    wb = openpyxl.load_workbook(workbook_path, data_only=True)
+    found = []
+    for ws in wb.worksheets:
+        merged_width = {}
+        for rng in ws.merged_cells.ranges:
+            width = sum(ws.column_dimensions[get_column_letter(c)].width or 8.43
+                        for c in range(rng.min_col, rng.max_col + 1))
+            merged_width[(rng.min_row, rng.min_col)] = width
+        for row in ws.iter_rows():
+            for cell in row:
+                if not isinstance(cell.value, (int, float)):
+                    continue
+                width = merged_width.get((cell.row, cell.column))
+                if width is None:
+                    width = ws.column_dimensions[cell.column_letter].width or 8.43
+                nf = cell.number_format or 'General'
+                decimals = 4 if '0.0000' in nf else (2 if '0.00' in nf else 0)
+                if 'General' in nf:
+                    text = f'{cell.value:,}' if isinstance(cell.value, int) else f'{cell.value:,.2f}'
+                else:
+                    text = f'{cell.value:,.{decimals}f}'
+                if len(text) > width - 0.7:
+                    found.append(f'{ws.title}!{cell.coordinate} 값 {text} / 너비 {width:.0f}')
+    return found
+
+
+def check_overflow(rates):
+    """[D] 대표 케이스(수니네 혼합 + 큐텐 케이팝피버 수동값)로 워크북을 생성해 ### 스캔."""
+    from modules.excel_writer import generate_excel
+    from modules.lazada_order_parser import merge_lazada_results
+    from modules.shopify_parser import merge_shopify_results
+
+    print('== [D] 열 너비 오버플로(###) 검사')
+    rate_map = {}
+    for cur in ['MYR', 'PHP', 'SGD', 'THB', 'TWD', 'VND', 'BRL', 'USD']:
+        daily = rates.daily[rates.daily['currency'] == cur]
+        rate_map[cur] = {
+            'currency': cur, 'currency_name': cur, 'period': '', 'average': 0.0,
+            'min': 0.0, 'min_date': '', 'max': 0.0, 'max_date': '', 'range': 0.0,
+            'cross_rate': 0.0, 'display_start': '', 'display_end': '',
+            'daily': [{'date': d.strftime('%Y.%m.%d'), 'rate': float(r), 'change': 0, 'cross': 0}
+                      for d, r in zip(daily['date'], daily['rate'])],
+        }
+    jpy_monthly = rates.monthly[rates.monthly['currency'] == 'JPY']
+    rate_map['JPY'] = {
+        'currency': 'JPY', 'currency_name': '일본 엔 (JPY)', 'period': '',
+        'average': 0.0, 'daily': [],
+        'monthly': [{'year_month': m, 'rate': float(r)}
+                    for m, r in zip(jpy_monthly['year_month'], jpy_monthly['rate'])],
+    }
+
+    shopee = [quiet_parse(f) for f in sorted((S / 'lazada/input').glob('수니네_*.pdf'))]
+    lazada = merge_lazada_results([parse_lazada_order_excel(f)
+                                   for f in sorted((S / 'lazada/input').glob('라자다_*.xlsx'))])
+    shopify = merge_shopify_results([parse_shopify_orders(f)
+                                     for f in sorted((S / 'shopify/input').glob('*orders*.csv'))])
+    joom = [quiet_parse(next((S / 'joom/input').glob('*.pdf')))]
+    k = quiet_parse(S / 'lazada/input/큐텐(KSE)_해외소포수령증_26년 상반기.pdf')
+    k['entries'] = [{'period_start': k['period_start'], 'period_end': k['period_end'],
+                     'tracking_no': k['tracking_no'], 'qty': k['qty'],
+                     'amount': k['amount'], 'write_date': k['write_date']}]
+
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / 'overflow_check.xlsx'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            generate_excel(shopee_results=shopee, lazada_result=lazada, qoo10_result=k,
+                           rates=rate_map, output_path=str(out),
+                           joom_results=joom, shopify_results=shopify,
+                           year=2026, month=6)
+        found = _overflow_cells(out)
+    report('overflow', '[D] ### 위험 셀 0건', not found,
+           f'{len(found)}건: ' + ' / '.join(found[:5]) if found else '전 시트 통과')
+
+
 def check_joom_case(case):
     exp = load_expected(case)
     print(f'== {case}')
@@ -205,6 +286,7 @@ CHECKS = {
     'shopify': check_shopify,
     'joom': lambda rates: check_joom_case('joom'),
     'joom2': lambda rates: check_joom_case('joom2'),
+    'overflow': check_overflow,
 }
 
 
