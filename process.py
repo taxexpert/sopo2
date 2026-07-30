@@ -144,6 +144,8 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
                 print(f'     쇼피파이 {result.get("store","")} — {result.get("row_count", 0)}건 '
                       f'/ {result.get("total_by_currency", {})}'
                       + (f' / 미반영: {reason_text}' if reason_text else ''))
+                for w in result.get('refund_warnings') or []:
+                    print(f'     ⚠️  {w}')
                 continue
             if input_path.suffix.lower() == '.csv':
                 print(f'     ⚠️  인식할 수 없는 CSV — {input_path.name}')
@@ -154,10 +156,14 @@ def process(year: int = None, month: int = None, pdf_paths: list = None):
             reason_text = ', '.join(f"{k} {v['count']}건" for k, v in sorted(reasons.items()))
             print(f'     라자다 주문 Excel — {len(result.get("items", []))}건'
                   + (f' / 미반영: {reason_text}' if reason_text else ''))
+            for w in result.get('refund_warnings') or []:
+                print(f'     ⚠️  {w}')
             continue
         result = parse_pdf(str(input_path))
         if result is None:
             continue
+        for w in result.get('refund_warnings') or []:
+            print(f'     ⚠️  {w}')
         ptype = result.get('type')
         if ptype == 'shopee':
             shopee_results.append(result)

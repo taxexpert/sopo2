@@ -448,6 +448,7 @@ if uploaded_files:
             "_file_key": file_key,
             "_auto_imported": True,
             "_submitter": result.get("submitter") or {},
+            "_warnings": result.get("refund_warnings") or [],
         })
 
 # ══════════════════════════════════════════════════════════════════
@@ -740,6 +741,11 @@ if process_btn:
         logs.append(str(msg))
         log_area.markdown('<div class="log-box">' + "\n".join(logs[-120:]) + '</div>', unsafe_allow_html=True)
 
+    def log_refund_warnings(result):
+        """환불 감지 장치가 남긴 경고를 처리 로그에 표시합니다 (전 플랫폼 공통)."""
+        for w in (result or {}).get("refund_warnings") or []:
+            log(f"[WARN] {w}")
+
     st.session_state.result_files = []
     progress_bar.progress(3, text="처리 준비 중...")
     status_text.info("파일 분석, 환율 수집, 엑셀 생성 중입니다...")
@@ -779,6 +785,7 @@ if process_btn:
                         log(f"[OK] 쇼피파이 {result.get('store','')}: {p.name} / "
                             f"{result.get('row_count', 0):,}건 / {total_text}"
                             + (f" / 미반영: {reason_text}" if reason_text else ""))
+                        log_refund_warnings(result)
                         continue
                     if selected_type != "lazada_excel":
                         log(f"[WARN] 지원하지 않는 Excel/CSV 형식: {p.name}")
@@ -791,6 +798,7 @@ if process_btn:
                     reason_text = ", ".join(f"{k} {v['count']}건" for k, v in sorted(reasons.items()))
                     log(f"[OK] 라자다 주문엑셀: {p.name} / {len(result.get('items', [])):,}건 / {total_text}"
                         + (f" / 미반영: {reason_text}" if reason_text else ""))
+                    log_refund_warnings(result)
                     continue
 
                 detected_from_file = detect_pdf_type(str(p))
@@ -802,6 +810,8 @@ if process_btn:
                     if matched:
                         e = matched[0]
                         log(f"[OK] 큐텐재팬: {p.name} / {int(e.get('qty', 0)):,}건 / {int(e.get('amount', 0)):,} JPY")
+                        for w in e.get("_warnings") or []:
+                            log(f"[WARN] {w}")
                     else:
                         log(f"[WARN] 큐텐재팬 PDF 자동입력 실패: {p.name} / STEP 2에서 직접 입력")
                     continue
@@ -830,6 +840,7 @@ if process_btn:
                     log(f"[OK] Joom: {p.name} / {len(result.get('items', [])):,}건 / {total_text}")
                     if result.get("total_mismatch"):
                         log(f"[WARN] Joom 합계 불일치: PDF 표기 {result.get('declared_total')} / 건별 {totals}")
+                log_refund_warnings(result)
 
             lazada_result = merge_lazada_results(lazada_results)
             shopify_results = merge_shopify_results(shopify_results)
