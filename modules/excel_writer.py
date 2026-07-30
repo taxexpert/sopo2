@@ -826,6 +826,7 @@ def _copy_lazada_source_workbooks(ws, source_workbooks: list) -> bool:
 # 미반영 사유 한글 표기 (시트 구분 열에 사용) — 부분일치 순서대로 검사합니다.
 # 라자다 status는 'refund_completed' 같은 변형이 있어 짧은 키(refund/return/cancel)도 둡니다.
 SKIP_REASON_LABELS = {
+    'negative': '음수금액(검토)',
     'refund': '전액환불', 'void': '취소', 'unfulfilled': '미배송',
     'cancel': '취소', 'return': '반품',
 }

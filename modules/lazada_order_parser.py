@@ -19,6 +19,8 @@ from typing import Iterable, Optional
 import pandas as pd
 from openpyxl import load_workbook
 
+from .refund_guard import negative_warning
+
 
 COUNTRY_INFO = {
     "vietnam": ("VN", "VND"),
@@ -129,6 +131,8 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
     # 사유별 집계와 함께, 시트에 정상 건과 같은 형식의 행으로 표시할 상세도 보존합니다.
     skipped_by_reason = {}
     skipped_items = []
+    # 환불 감지 장치: 환불성 상태가 아닌데 금액이 음수인 행(숨은 환불·조정)을 모아 경고합니다.
+    negative_totals = {}
 
     for row_no in range(header_row + 1, selected.max_row + 1):
         delivered_date = _date(value(row_no, "deliveredDate"))
@@ -159,6 +163,28 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
             continue
         if amount == 0:
             skipped_no_amount += 1
+            continue
+        if amount < 0:
+            # 음수 금액 — 환불·조정으로 보이므로 합계에 섞지 않고 검토 대상으로 돌립니다.
+            b = skipped_by_reason.setdefault("negative_amount", {"count": 0, "fx": 0.0})
+            b["count"] += 1
+            b["fx"] = round(b["fx"] + float(amount), 2)
+            shipping_country = _text(value(row_no, "shippingCountry"))
+            destination, currency, _name = _country_info(shipping_country, path.name)
+            negative_totals[currency or "?"] = round(
+                negative_totals.get(currency or "?", 0.0) + float(amount), 2)
+            skipped_items.append({
+                "date": delivered_date,
+                "order_number": _text(value(row_no, "orderNumber")),
+                "order_item_id": _text(value(row_no, "orderItemId")),
+                "tracking_no": _text(value(row_no, "trackingCode")),
+                "carrier": _text(value(row_no, "shippingProvider")),
+                "currency": currency,
+                "amount": float(amount),
+                "item_name": _text(value(row_no, "itemName")),
+                "skip_reason": "negative_amount",
+                "source_file": path.name,
+            })
             continue
 
         shipping_country = _text(value(row_no, "shippingCountry"))
@@ -233,6 +259,11 @@ def parse_lazada_order_excel(path: str | Path) -> dict:
         "skipped_no_amount": skipped_no_amount,
         "skipped_by_reason": skipped_by_reason,
         "skipped_items": skipped_items,
+        "refund_warnings": (
+            [negative_warning(f"라자다 {path.name}",
+                              skipped_by_reason["negative_amount"]["count"], negative_totals)]
+            if negative_totals else []
+        ),
     }
 
 
@@ -252,7 +283,9 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
     skipped_items = []
     skipped_no_date = 0
     skipped_no_amount = 0
+    refund_warnings = []
     for result in valid:
+        refund_warnings.extend(result.get("refund_warnings", []))
         skipped_items.extend(result.get("skipped_items", []))
         items.extend(result.get("items", []))
         source_files.extend(result.get("source_files", []))
@@ -298,4 +331,5 @@ def merge_lazada_results(results: Iterable[Optional[dict]]) -> Optional[dict]:
         "skipped_items": skipped_items,
         "skipped_no_date": skipped_no_date,
         "skipped_no_amount": skipped_no_amount,
+        "refund_warnings": refund_warnings,
     }

@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from .refund_guard import negative_warning, scan_pdf_text
+
 
 # ── 통화 매핑 ──────────────────────────────────────────────────
 COUNTRY_TO_CURRENCY = {
@@ -252,15 +254,18 @@ def parse_shopee_pdf(pdf_path: str) -> dict:
     in_section = False
 
     # 데이터 행 패턴: 배송업체 날짜(YYYY.MM.DD) 운송장번호 국가 수량 금액
+    # 금액에 음수를 허용하는 것은 매출로 잡기 위해서가 아니라, 환불·조정 행이
+    # 패턴 불일치로 조용히 사라지지 않고 감지되게 하기 위해서입니다.
     tx_pattern = re.compile(
         r'^(.+?)\s+'                      # 배송업체
         r'(\d{4}[-\.]\d{2}[-\.]\d{2})\s+'  # 날짜
         r'([A-Z0-9]{10,})\s+'              # 운송장번호
         r'([A-Z]{2})\s+'                   # 국가코드
         r'(\d+)\s+'                        # 수량
-        r'([\d,]+\.?\d*)$'                 # 금액
+        r'(-?[\d,]+\.?\d*)$'               # 금액
     )
 
+    flagged_items = []
     for line in all_lines:
         line = line.strip()
         if '3.' in line and '해외배송' in line and '내역' in line:
@@ -273,14 +278,19 @@ def parse_shopee_pdf(pdf_path: str) -> dict:
             if m:
                 # 날짜 정규화 (2025-12-03 → 2025.12.03)
                 date_str = m.group(2).replace('-', '.')
-                transactions.append({
+                tx = {
                     'carrier':     m.group(1).strip(),
                     'date':        date_str,
                     'tracking_no': m.group(3),
                     'country':     m.group(4),
                     'qty':         int(m.group(5)),
                     'amount':      float(m.group(6).replace(',', '')),
-                })
+                }
+                if tx['amount'] < 0:
+                    tx['skip_reason'] = 'negative_amount'
+                    flagged_items.append(tx)
+                else:
+                    transactions.append(tx)
 
     # 합계 금액 보정 (파싱 실패 시 거래 합산)
     if total_amount == 0.0 and transactions:
@@ -294,6 +304,14 @@ def parse_shopee_pdf(pdf_path: str) -> dict:
 
     submitter = _extract_submitter(full_text)
 
+    refund_warnings = scan_pdf_text('쇼피', full_text)
+    if flagged_items:
+        neg_totals = {}
+        for tx in flagged_items:
+            neg_totals[currency or '?'] = round(
+                neg_totals.get(currency or '?', 0.0) + tx['amount'], 2)
+        refund_warnings.append(negative_warning('쇼피', len(flagged_items), neg_totals))
+
     return {
         'type':         'shopee',
         'submitter':    submitter,
@@ -306,6 +324,8 @@ def parse_shopee_pdf(pdf_path: str) -> dict:
         'total_qty':    total_qty,
         'total_amount': total_amount,
         'transactions': transactions,
+        'flagged_items': flagged_items,
+        'refund_warnings': refund_warnings,
     }
 
 
@@ -359,14 +379,23 @@ def parse_lazada_pdf(pdf_path: str) -> dict:
         r'([A-Z]{2})\s+'                      # 도착국
         r'([\w\d]+(?:외\d+\n?건)?)\s+'        # 발송번호
         r'([\d,]+)건\s+'                      # 수량
-        r'([\d,]+\.?\d*)\(([A-Z]{3})\)'      # 금액(통화)
+        r'(-?[\d,]+\.?\d*)\(([A-Z]{3})\)'    # 금액(통화) — 음수는 감지 후 제외
     )
+
+    flagged_items = []
+
+    def _add_item(item):
+        if item['amount'] < 0:
+            item['skip_reason'] = 'negative_amount'
+            flagged_items.append(item)
+        else:
+            items.append(item)
 
     for line in all_lines:
         line = line.strip()
         m = item_pattern.search(line)
         if m:
-            items.append({
+            _add_item({
                 'service':     m.group(1),
                 'carrier':     m.group(2).strip(),
                 'origin':      m.group(3),
@@ -380,9 +409,9 @@ def parse_lazada_pdf(pdf_path: str) -> dict:
     # 패턴이 너무 엄격하면 간단 방식으로 재시도
     if not items:
         for line in all_lines:
-            m = re.search(r'라자다.*?([A-Z]{2})\s+([\w\d]+(?:외\d+건)?)\s+([\d,]+)건\s+([\d,]+\.?\d*)\(([A-Z]{3})\)', line)
+            m = re.search(r'라자다.*?([A-Z]{2})\s+([\w\d]+(?:외\d+건)?)\s+([\d,]+)건\s+(-?[\d,]+\.?\d*)\(([A-Z]{3})\)', line)
             if m:
-                items.append({
+                _add_item({
                     'service':     '라자다',
                     'carrier':     carrier,
                     'origin':      'KR',
@@ -393,6 +422,14 @@ def parse_lazada_pdf(pdf_path: str) -> dict:
                     'currency':    m.group(5),
                 })
 
+    refund_warnings = scan_pdf_text('라자다', full_text)
+    if flagged_items:
+        neg_totals = {}
+        for it in flagged_items:
+            cur = it.get('currency') or '?'
+            neg_totals[cur] = round(neg_totals.get(cur, 0.0) + it['amount'], 2)
+        refund_warnings.append(negative_warning('라자다', len(flagged_items), neg_totals))
+
     return {
         'type':         'lazada',
         'carrier':      carrier,
@@ -401,6 +438,8 @@ def parse_lazada_pdf(pdf_path: str) -> dict:
         'write_date':   write_date,
         'submitter':    _extract_submitter(full_text),
         'items':        items,
+        'flagged_items': flagged_items,
+        'refund_warnings': refund_warnings,
     }
 
 
@@ -464,9 +503,14 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
     write_date = ''
     items = []
     summary_items = []
+    flagged_items = []
+    page_texts = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                page_texts.append(page_text)
             tables = page.extract_tables() or []
             for table in tables:
                 if not table:
@@ -523,14 +567,19 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
                         qty = int(_num(r[4], 0))
                         amount = _num(r[5], 0)
                         if qty or amount:
-                            summary_items.append({
+                            entry = {
                                 'carrier': cur_carrier or carrier,
                                 'service': cur_service,
                                 'tracking_no': cur_tracking,
                                 'currency': currency,
                                 'qty': qty,
                                 'amount': amount,
-                            })
+                            }
+                            if amount < 0 or qty < 0:
+                                entry['skip_reason'] = 'negative_amount'
+                                flagged_items.append(entry)
+                            else:
+                                summary_items.append(entry)
 
                 # 3. 해외배송 내역서 월별 표
                 if '발행월' in header_text and '통화단위' in header_text and '신고금액' in header_text:
@@ -557,6 +606,13 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
                         if not qty and not amount:
                             continue
                         month_start, month_end = _month_start_end(cur_month)
+                        if amount < 0 or qty < 0:
+                            flagged_items.append({
+                                'month': cur_month, 'currency': currency,
+                                'qty': qty, 'amount': amount,
+                                'skip_reason': 'negative_amount',
+                            })
+                            continue
                         items.append({
                             'carrier': cur_carrier or carrier,
                             'service': cur_service,
@@ -579,6 +635,14 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
             period_start = _month_start_end(months[0])[0]
             period_end = _month_start_end(months[-1])[1]
 
+    refund_warnings = scan_pdf_text('이베이/린코스', '\n'.join(page_texts))
+    if flagged_items:
+        neg_totals = {}
+        for it in flagged_items:
+            cur = it.get('currency') or '?'
+            neg_totals[cur] = round(neg_totals.get(cur, 0.0) + float(it.get('amount', 0) or 0), 2)
+        refund_warnings.append(negative_warning('이베이/린코스', len(flagged_items), neg_totals))
+
     return {
         'type': 'ebay',
         'platform': '이베이',
@@ -589,6 +653,8 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
         'write_date': write_date,
         'items': items,
         'summary_items': summary_items,
+        'flagged_items': flagged_items,
+        'refund_warnings': refund_warnings,
     }
 
 # ─────────────────────────────────────────────────────────────────
@@ -668,9 +734,14 @@ def parse_joom_pdf(pdf_path: str) -> dict:
     period_start = period_end = write_date = ''
     items = []
     declared_total = {}
+    flagged_items = []
+    page_texts = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                page_texts.append(page_text)
             for table in page.extract_tables() or []:
                 if not table:
                     continue
@@ -731,6 +802,14 @@ def parse_joom_pdf(pdf_path: str) -> dict:
 
                     date_value = _normalize_korean_date(cells[i_date]) if i_date is not None and i_date < len(cells) else ''
                     amount = _num(cells[i_amount]) if i_amount is not None and i_amount < len(cells) else 0.0
+                    if amount < 0:
+                        # 음수 금액 — 환불·조정으로 보이므로 합계에 섞지 않고 검토 대상으로 돌립니다.
+                        flagged_items.append({
+                            'date': date_value, 'currency': currency, 'amount': amount,
+                            'order_id': cells[i_order] if i_order is not None and i_order < len(cells) else '',
+                            'skip_reason': 'negative_amount',
+                        })
+                        continue
                     if not date_value or not amount:
                         continue
 
@@ -776,6 +855,14 @@ def parse_joom_pdf(pdf_path: str) -> dict:
     print(f"  Joom PDF 인식 - {len(items)}건 / " +
           ", ".join(f"{v:,.2f} {k}" for k, v in total_by_currency.items()))
 
+    refund_warnings = scan_pdf_text('Joom', '\n'.join(page_texts))
+    if flagged_items:
+        neg_totals = {}
+        for it in flagged_items:
+            cur = it.get('currency') or '?'
+            neg_totals[cur] = round(neg_totals.get(cur, 0.0) + float(it.get('amount', 0) or 0), 2)
+        refund_warnings.append(negative_warning('Joom', len(flagged_items), neg_totals))
+
     return {
         'type': 'joom',
         'platform': 'Joom',
@@ -788,6 +875,8 @@ def parse_joom_pdf(pdf_path: str) -> dict:
         'declared_total': declared_total,
         'total_by_currency': total_by_currency,
         'total_mismatch': total_mismatch,
+        'flagged_items': flagged_items,
+        'refund_warnings': refund_warnings,
     }
 
 
@@ -1031,6 +1120,7 @@ def parse_qoo10_pdf(pdf_path: str) -> Optional[dict]:
 
     print(f"  큐텐 PDF 자동인식 - 기간:{period_start}~{period_end} 수량:{qty}건 JPY:{amount:,.0f}")
     return {
+        "refund_warnings": scan_pdf_text("큐텐재팬", all_text),
         "type": "qoo10",
         "submitter": submitter,
         "carrier": table_data.get("carrier") or "국제로지스틱",

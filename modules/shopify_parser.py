@@ -10,11 +10,14 @@ Shopify 관리자에서 내려받은 `<스토어명> orders <기간>.csv` (또�
 - 제외: 같은 주문의 2번째 이후 라인아이템 행(`Total` 이 비어 있음)
 
 환불·취소 처리 규칙 (전 플랫폼 공통 정책)
-- partially_refunded → 반영 (`Total` 전액)
+- partially_refunded → 반영 (`Total` 전액 — 물품 반환 없는 클레임 변상금은
+  과세표준에서 공제하지 않음, 부가46015-2537)
 - voided            → 미반영 (사유: voided)
 - refunded (전액환불) → 미반영 (사유: refunded)
+- 음수 `Total`       → 미반영 (사유: negative_amount) + 경고
 - 그 외 `Fulfilled at` 없음 → 미반영 (사유: unfulfilled)
-미반영 건은 사유별 건수·금액으로 집계해 `skipped_by_reason` 에 담습니다.
+미반영 건은 사유별 건수·금액으로 집계해 `skipped_by_reason` 에 담고,
+정책이 모르는 환불성 상태가 나타나면 `refund_warnings` 로 보고합니다.
 """
 
 from __future__ import annotations
@@ -28,6 +31,14 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from openpyxl import load_workbook
+
+from .refund_guard import looks_refundish, negative_warning
+
+# 정책이 아는 financial_status. 이 밖의 환불성 상태가 나타나면 경고를 냅니다.
+KNOWN_STATUSES = {
+    "", "paid", "pending", "authorized", "partially_paid", "expired",
+    "partially_refunded", "refunded", "voided",
+}
 
 
 # orders export 판별에 쓰는 필수 열 (정규화 후 비교)
@@ -188,6 +199,9 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
     # 미반영 주문을 사유별로 집계하고, 시트에 행으로 표시할 수 있도록 상세도 보존합니다.
     skipped_by_reason = {}
     skipped_items = []
+    # 환불 감지 장치: 음수 금액과 정책이 모르는 환불성 상태를 모아 경고합니다.
+    negative_totals = {}
+    unknown_refundish = {}
 
     def _skip(reason, amount, currency, order_name="", status="", fulfilled_date="",
               row_index=None, item_name=""):
@@ -248,16 +262,28 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
             continue
 
         status_key = status.strip().lower()
+        if amount < 0:
+            # 음수 금액 — 환불·조정 행으로 보이므로 합계에 섞지 않고 검토 대상으로 돌립니다.
+            _skip("negative_amount", amount, currency, order_name, status, fulfilled_date, row_index, item_name)
+            row_flags.append({"index": row_index, "date": fulfilled_date, "counted": False, "reason": "negative_amount"})
+            negative_totals[currency] = round(negative_totals.get(currency, 0.0) + float(amount), 2)
+            continue
         if status_key == "refunded":
             # 전액환불 — 배송 여부와 무관하게 매출 미반영.
             _skip("refunded", amount, currency, order_name, status, fulfilled_date, row_index, item_name)
             row_flags.append({"index": row_index, "date": fulfilled_date, "counted": False, "reason": "refunded"})
             continue
+        if status_key == "voided":
+            # 취소 — 정책 표와 동일하게 배송 여부와 무관하게 미반영.
+            _skip("voided", amount, currency, order_name, status, fulfilled_date, row_index, item_name)
+            row_flags.append({"index": row_index, "date": fulfilled_date, "counted": False, "reason": "voided"})
+            continue
+        if status_key not in KNOWN_STATUSES and looks_refundish(status_key):
+            unknown_refundish[status_key] = unknown_refundish.get(status_key, 0) + 1
         if not fulfilled_date:
-            # 배송이 이루어지지 않은 건 — voided(취소)와 그 외(unfulfilled)를 구분해 집계합니다.
-            reason = "voided" if status_key == "voided" else "unfulfilled"
-            _skip(reason, amount, currency, order_name, status, "", row_index, item_name)
-            row_flags.append({"index": row_index, "date": "", "counted": False, "reason": reason})
+            # 배송이 이루어지지 않은 건.
+            _skip("unfulfilled", amount, currency, order_name, status, "", row_index, item_name)
+            row_flags.append({"index": row_index, "date": "", "counted": False, "reason": "unfulfilled"})
             continue
 
         row_flags.append({"index": row_index, "date": fulfilled_date, "counted": True})
@@ -289,6 +315,17 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         cur = it["currency"]
         total_by_currency[cur] = round(total_by_currency.get(cur, 0.0) + it["amount"], 2)
 
+    label = store or store_name_from_filename(path.name)
+    refund_warnings = []
+    if negative_totals:
+        count = skipped_by_reason.get("negative_amount", {}).get("count", 0)
+        refund_warnings.append(negative_warning(f"쇼피파이 {label}", count, negative_totals))
+    for key, count in sorted(unknown_refundish.items()):
+        refund_warnings.append(
+            f"쇼피파이 {label}: 미확인 환불성 상태 '{key}' {count}건 — "
+            "정책에 없는 상태라 전액 반영했습니다. 반품(환입) 여부를 확인해 주세요."
+        )
+
     return {
         "type": "shopify",
         "platform": "쇼피파이",
@@ -309,6 +346,7 @@ def parse_shopify_orders(path: str | Path, store: str = "") -> dict:
         "row_count": len(items),
         "skipped_items": skipped_items,
         "skipped_by_reason": skipped_by_reason,
+        "refund_warnings": refund_warnings,
         "skipped_unfulfilled": sum(v["count"] for k, v in skipped_by_reason.items()
                                    if k in ("voided", "unfulfilled")),
         "skipped_blank": skipped_blank,
