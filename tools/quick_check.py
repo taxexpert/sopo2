@@ -27,6 +27,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# 리포트에 —·✅ 가 들어가므로 cp949 콘솔에서도 깨지지 않게 UTF-8로 고정합니다.
+# (없으면 첫 report() 호출에서 UnicodeEncodeError 로 죽습니다.)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 import openpyxl  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
 import pandas as pd  # noqa: E402

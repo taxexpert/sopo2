@@ -13,20 +13,64 @@ cp samples/fixtures/*.csv data/     # 최초 1회 — 환율 고정본 (SMBS 접
 python tools/quick_check.py         # 전체 케이스 (특정 케이스만: python tools/quick_check.py shopee)
 ```
 
-종료코드 0 = 통과, 1 = 실패(실패 목록 출력). **루프에서는 이 종료코드로 판정**합니다.
+```bash
+python tools/audit_workbook.py --build all
+```
 
-## 1. 자동 체크 (quick_check.py 가 수행)
+종료코드 0 = 통과, 1 = 실패(실패 목록 출력), 2 = 검증기가 판정할 수 없는 구조 붕괴.
+**루프에서는 이 종료코드로 판정**합니다.
+
+## 1. 자동 체크
+
+### 1-1. `quick_check.py` — 회귀 (정답지 대조, 20~60초)
 
 | # | 항목 | 방법 |
 |---|---|---|
 | A | **원화를 제대로 파악했는가** | 케이스별 원화 총합·통화별 외화/원화 = `expected/summary.json` 확정값 |
 | B | **input 전 건이 확인됐는가** | 완전성 등식: 반영 + 사유별 미반영 + 라인아이템 연속행 = 전체 데이터 행 |
 | C | **2가지 이상 체크 방식** | ① 문서 자체 합계행 vs 건별 합산 (쇼피 19장 전수, Joom 선언합계) ② 건수 vs 수량 별도 대조 ③ expected 와의 대조 — 서로 독립된 근거 |
+| D | **숫자 셀이 열 너비보다 넓지 않은가** | `###` 위험 셀 스캔 |
 
 - A가 깨지면: 환율 조회·환산·반올림 중 무언가 바뀐 것. **의도된 규칙 변경이면 expected 를
   갱신하고 `samples/README.md` 변경 이력에 사유를 남긴 뒤** 다시 통과시킬 것.
 - B가 깨지면: 행을 조용히 버리고 있는 것. 미반영에도 반드시 사유가 붙어야 함.
 - C가 깨지면: 파서가 행을 놓치거나 중복 인식하는 것.
+
+### 1-2. `audit_workbook.py` — 산출물 감사 (정답지 비의존, 20~40초/케이스)
+
+생성된 xlsx의 **셀 값만** 읽어 서로 대사합니다. `expected/`를 읽지 않으므로
+"기대값 자체가 틀린" 경우에도 무관하게 판정합니다.
+
+- **A-5 6중 대조 (허용오차 0원)** — 총집계 = 월별집계 = 통화별시트 = 수출실적 = 영세율
+  = `build_declaration_rows` 독립재계산. 불일치 시 6개 값을 전부 출력하며, **갈라진 쌍이
+  원인의 지문**입니다 (총집계≠월별집계 → 귀속월 상충 / 통화시트≠총집계 → `_get_rate` 폴백 /
+  수출실적≠통화시트 → `build_declaration_rows` 플랫폼 블록 누락)
+- A-4 통화 시트 1~5행 요약 vs 데이터행 합 · B-2 환율 시트 100통화 표시값 경유 검산 ·
+  C-3 원본 행 중복 · D-1 시트 구성 · D-2 헤더 위치(JPY만 4행) · D-3 신고서류 필수 필드와
+  **서식 템플릿 반영 여부** · D-4 쇼피파이 전 건 설명 · E-2 외화는 있는데 환율/원화가 0인 행
+
+> 큐텐 구역에는 `총합` 행이 없습니다(`excel_writer.py:1536-1550`). 감사기가 이걸 특수처리하지
+> 않으면 A-5가 **항상 위양성 FAIL**이 되므로, 관련 코드를 고쳤으면 `--build qoo10`으로 먼저 확인하세요.
+
+### 1-3. 커밋·PR 전 (느리지만 관측 지점이 다름)
+
+```bash
+python tools/e2e_apptest.py         # 실경로 — app.py:733-961 인라인 블록 통과 (1~3분/케이스)
+```
+
+```bash
+python tools/metamorphic_check.py   # 메타모픽 불변식 MR-1~MR-8 (정답지 비의존, 3~6분)
+```
+
+- `e2e_apptest.py` 는 streamlit `AppTest` 로 app.py 를 스크립트째 돌립니다. `quick_check`·
+  `audit_workbook` 은 모듈을 직접 조립하므로 **app.py 오케스트레이션을 한 줄도 지나지 않습니다** —
+  `_build_qoo10_result` · `_qoo10_reporting_month` · `_daily_rate_period_bounds` · 파일명 규칙은
+  여기서만 검증됩니다. B-5 큐텐 3중 일치도 이 스크립트가 봅니다.
+- `metamorphic_check.py` 는 입력을 변형해 **변해야/변하지 않아야** 하는 관계로 판정합니다.
+  기준일 검사는 반드시 양방향입니다(MR-4a 비기준일 변경→불변 / MR-4b 기준일 변경→변동).
+  단방향만 보면 "환율을 아무 날짜로도 안 쓰는" 구현이 통과합니다.
+- 두 스크립트는 `data/` 캐시를 tmp 사본으로 바꿔치기하고 SMBS 진입점 5개를 차단합니다.
+  이 가드 없이 돌리면 `data/` 캐시가 조용히 바뀌어 **이후 모든 회귀 결과가 오염됩니다.**
 
 ## 2. 수동 체크 — 구조적 pitfall (코드 수정 시 훑기)
 
@@ -55,5 +99,14 @@ python tools/quick_check.py         # 전체 케이스 (특정 케이스만: pyt
 
 ## 4. 전체 검증 (무겁고 철저한 버전 — 릴리스 전에만)
 
-정답지 건별 대조, 환율 재수집 포함. 절차는 `samples/README.md` 와
-`.claude/agents/sales-summary-verifier.md` 참고.
+자동 4종을 모두 돌린 뒤, 자동화가 못 하는 두 항목을 사람/에이전트 축으로 채웁니다.
+
+```bash
+python tools/quick_check.py; python tools/audit_workbook.py --build all; python tools/e2e_apptest.py; python tools/metamorphic_check.py
+```
+
+- **A-2 원본 대사** — 원본 PDF/CSV를 생성 로직과 무관하게 다시 세기.
+  `.claude/agents/sales-summary-verifier.md` 에이전트의 고유 영역이며, **정답지와 코드가
+  같이 틀린 경우를 잡는 유일한 층**입니다(2026-07-29 쇼피 MX 사고가 그 사례).
+- **A-3 외부 정답지 교차** — `samples/*/reference/` 의 고객 수기본·기존 산출물과 대조.
+  형식이 제각각이라 수동입니다. 절차는 `samples/README.md` 참고.
