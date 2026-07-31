@@ -915,8 +915,25 @@ def parse_joom_pdf(pdf_path: str) -> dict:
         abs(total_by_currency.get(cur, 0.0) - float(value or 0)) > 0.01
         for cur, value in declared_total.items()
     )
+
+    # 표현 등급 (2026-07-31 사용자 확정): 반올림 수준(1통화단위 미만이면서 0.1% 미만)
+    # 차이는 [참고]로 낮춰 표시합니다. 발동 조건 자체는 축소하지 않습니다(조용한 오답 금지).
+    def _mismatch_is_minor(cur, value):
+        diff = abs(total_by_currency.get(cur, 0.0) - float(value or 0))
+        base = max(abs(float(value or 0)), abs(total_by_currency.get(cur, 0.0)))
+        return diff < 1.0 and base > 0 and diff / base < 0.001
+
+    total_mismatch_minor = total_mismatch and all(
+        _mismatch_is_minor(cur, value)
+        for cur, value in declared_total.items()
+        if abs(total_by_currency.get(cur, 0.0) - float(value or 0)) > 0.01
+    )
     if total_mismatch:
-        print(f"  ⚠️ Joom 합계 불일치 - PDF 합계 {declared_total} / 건별 합계 {total_by_currency}")
+        if total_mismatch_minor:
+            print(f"  [참고] Joom 원본 인쇄 합계 {declared_total}가 건별 합산 {total_by_currency}과 "
+                  f"반올림 수준으로 어긋납니다 — 건별 합산으로 집계했습니다")
+        else:
+            print(f"  ⚠️ Joom 합계 불일치 - PDF 합계 {declared_total} / 건별 합계 {total_by_currency}")
 
     print(f"  Joom PDF 인식 - {len(items)}건 / " +
           ", ".join(f"{v:,.2f} {k}" for k, v in total_by_currency.items()))
@@ -941,6 +958,7 @@ def parse_joom_pdf(pdf_path: str) -> dict:
         'declared_total': declared_total,
         'total_by_currency': total_by_currency,
         'total_mismatch': total_mismatch,
+        'total_mismatch_minor': total_mismatch_minor,
         'flagged_items': flagged_items,
         'refund_warnings': refund_warnings,
     }
@@ -1217,10 +1235,19 @@ def parse_qoo10_pdf(pdf_path: str) -> Optional[dict]:
     declared_qty = table_data.get("declared_qty")
     declared_amount = table_data.get("declared_amount")
     if declared_amount is not None and amount and abs(float(amount) - float(declared_amount)) > 0.5:
-        refund_warnings.append(
-            f"큐텐재팬: 합계 불일치 — 내역 행 합산 {float(amount):,.0f} JPY / "
-            f"인쇄된 당기합계 {float(declared_amount):,.0f} JPY. 행 합산을 사용했으니 원본을 확인해 주세요."
-        )
+        diff = abs(float(amount) - float(declared_amount))
+        base = max(abs(float(amount)), abs(float(declared_amount)))
+        if diff < 1.0 and base > 0 and diff / base < 0.001:
+            # 반올림 수준 차이 — 표현만 낮춥니다 (JPY는 정수 단위라 사실상 드묾)
+            refund_warnings.append(
+                f"큐텐재팬: 원본 인쇄 당기합계 {float(declared_amount):,.0f} JPY가 내역 행 합산 "
+                f"{float(amount):,.0f} JPY와 반올림 수준으로 어긋납니다 — 행 합산으로 집계했습니다."
+            )
+        else:
+            refund_warnings.append(
+                f"큐텐재팬: 합계 불일치 — 내역 행 합산 {float(amount):,.0f} JPY / "
+                f"인쇄된 당기합계 {float(declared_amount):,.0f} JPY. 행 합산을 사용했으니 원본을 확인해 주세요."
+            )
     if declared_qty is not None and qty and int(qty) != int(declared_qty):
         refund_warnings.append(
             f"큐텐재팬: 건수 불일치 — 내역 행 합산 {int(qty):,}건 / "
