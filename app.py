@@ -410,7 +410,9 @@ if uploaded_files:
         elif ptype == "unknown_excel":
             target_col.error(
                 "인식할 수 없는 Excel입니다. 라자다는 deliveredDate·paidPrice, "
-                "쇼피파이는 Name·Financial Status·Fulfilled at·Total 열이 필요합니다."
+                "쇼피파이는 Name·Financial Status·Fulfilled at·Total 열이 필요합니다. "
+                "상업송장(인보이스)·정산·국내마켓 자료는 이 앱의 범위 밖이라 집계에 "
+                "포함되지 않습니다 — 신고 대상이면 별도로 집계해 주세요."
             )
             uploaded_type_choices[f.name] = ptype
         elif ptype == "unknown_csv":
@@ -1116,7 +1118,7 @@ if st.session_state.result_files:
 
 st.markdown('<div style="border-top:1px solid var(--line); margin:2rem 0 1rem"></div>',
             unsafe_allow_html=True)
-with st.expander("파일명 규칙"):
+with st.expander("지원 범위 · 파일명 규칙"):
     st.markdown(
         """
 | 파일명 패턴 | 플랫폼 |
@@ -1140,5 +1142,17 @@ with st.expander("파일명 규칙"):
 - 쇼피파이는 `transaction`, `payout` 파일이 아니라 **orders** 파일을 올려야 합니다.
 - 적용환율: 쇼피·라자다(주문내역)·Joom·쇼피파이는 **건별 기준일 일별환율**,
   이베이(린코스)·큐텐재팬은 **공식 월평균 매매기준율** 입니다.
+
+**이 앱이 다루지 않는 자료** — 아래는 올려도 미확인으로 표시되고 집계에 들어가지 않습니다.
+앱 결과에 없다고 해서 신고 대상이 아니라는 뜻은 아니니, 해당 매출은 별도로 집계해야 합니다.
+
+- **일반수출 상업송장(COMMERCIAL INVOICE)** — B2B 수출은 수출신고필증·외국환매입증명서
+  기반이라 소포수령증 서류와 증빙 체계가 다릅니다. 서식도 거래처마다 달라 자동 파싱하지 않습니다
+- **마켓 주문내역·정산 파일**(줌 주문내역, 쇼피 거래내역서, 쇼피파이 transaction/payout,
+  큐텐 판매내역 CSV 등) — 소포수령증과 이중계상될 수 있어 집계하지 않습니다.
+  수령증 건수·금액과 맞는지 **대조용**으로만 활용하세요
+- **입금·정산 증빙**(Payoneer 입금증 등) — 판매내역이 아니라 수수료가 차감된 정산금
+  수취 기록이라 매출 집계에 쓸 수 없습니다 (대금 회수 증빙으로만 보관)
+- **국내 매출 자료**(스마트스토어·번개장터·카드매출 등) — 영세율 대상이 아닙니다
 """
     )
