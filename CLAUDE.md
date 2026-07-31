@@ -45,11 +45,40 @@ python -m streamlit run app.py
   `winget install --id GitHub.cli -e` 후 터미널을 재시작해야 PATH에 잡힌다.
 - 셸은 PowerShell이 기본이고 Bash도 쓸 수 있다. 각자 문법이 다르다.
 
+## 어디를 볼지 — 문서 지도
+
+이 저장소는 문서가 이미 갖춰져 있다. **코드를 고치기 전에 해당 줄의 문서를 먼저 읽는다.**
+
+| 하려는 일 | 먼저 볼 곳 |
+|---|---|
+| 전체 구조·데이터 흐름 파악 | `docs/ARCHITECTURE.md` §1~4 — 모듈 책임, 파서 결과 dict 스키마, 환율 적용 매트릭스, 워크북 시트 구성 |
+| **새 플랫폼(마켓·배송대행사) 추가** | `docs/ARCHITECTURE.md` §5 — 손대야 할 지점 전부의 체크리스트. 포맷·판별 규칙은 `docs/PLATFORMS.md` |
+| 기존 파서 수정 / 입력 포맷 확인 | `docs/PLATFORMS.md` — 플랫폼별 포맷·판별 순서·시트 출력 필수항목·**지원 범위 밖 자료** |
+| 신고서류(영세율·수출실적) 동작 변경 | `docs/HANDOFF_V54.md` §7~10 + `docs/POLICY.md` — 특히 §10 **금지 회귀 14종** |
+| 환율 문제 | `docs/ARCHITECTURE.md` §3 · `docs/HANDOFF_V54.md` §5~6 (100통화 정규화·월평균 공식값 원칙) |
+| 고친 뒤 검증 | `docs/CHECKLIST.md` — 1분 경량 체크 + 구조적 함정 11종 → `python tools/quick_check.py` |
+| 검증 기준·과거 검증 이력 | `docs/VERIFICATION.md` — A~E 5축 기준표와 실행 이력(발견된 결함과 조치) |
+| 샘플·기대값·고객 케이스 | `samples/README.md` — 케이스별 확정 숫자·근거·변경 이력 |
+| 사용자 안내·배포·권한 | `README.md` — A 담당자용 / B 관리자용 |
+| 남은 과제 | `TODO.md` |
+
+기능을 추가·수정하는 최소 절차는 이렇다.
+
+1. 위 표에서 해당 문서를 읽는다 (신규 플랫폼이면 `docs/ARCHITECTURE.md` §5 체크리스트가 작업 목록 그 자체다)
+2. 코드를 고친다
+3. `python tools/quick_check.py` 로 전 케이스 회귀 확인 (종료코드 0이어야 함)
+4. 기대값이 의도적으로 바뀌었으면 `samples/README.md` 변경 이력에 사유를 남긴다
+5. 규칙이 바뀌었으면 `docs/PLATFORMS.md`·`README.md` 지원 표를 갱신한다
+
+작업 성격에 맞는 전용 서브에이전트가 `.claude/agents/` 에 셋 있다 —
+신규 플랫폼 `platform-parser-builder`, 집계 대사 `sales-summary-verifier`, 환율 `fx-rate-auditor`.
+
 ## 구조
 
 - `app.py` — Streamlit UI, 업로드·판별·오케스트레이션. 화면 스타일(CSS 토큰·헤더·단계 머리)도 여기 상단에 있다
-- `modules/` — 플랫폼별 파서, 환율 수집(서울외국환중개), 엑셀 생성
-- `forms/` · `samples/` — 서식 템플릿과 샘플 입력
+- `modules/` — 플랫폼별 파서, 환율 수집(서울외국환중개), 엑셀 생성 (모듈별 책임은 `docs/ARCHITECTURE.md` §1)
+- `tools/quick_check.py` — 회귀 검증 스크립트
+- `forms/` · `samples/` — 서식 템플릿과 샘플 입력(실파일은 git 제외)
 - `process.py` — CLI 경로
 
 ## 화면 규칙
