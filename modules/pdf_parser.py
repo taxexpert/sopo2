@@ -104,6 +104,12 @@ def detect_pdf_type(pdf_path: str) -> str:
     if "이베이" in name or "ebay" in lower or "린코스" in name or "lincos" in lower:
         return "ebay"
     if "joom" in lower or "조옴" in name or "에이치3" in name or "h3네트웍스" in name:
+        # 파일명에 JOOM이 있어도 입금증·인보이스 같은 비양식 PDF일 수 있으므로
+        # 본문 표식('상품 수령 및 운송 확인증'/H3)을 교차확인합니다.
+        # 텍스트 추출이 안 되는 스캔 PDF만 파일명을 신뢰합니다.
+        text = _extract_pdf_text_for_detection(str(pdf_path))
+        if text.strip():
+            return _detect_pdf_type_from_text(text)
         return "joom"
     # 쇼피: 업체명과 무관하게 파일명의 국가코드 패턴(_MY_, _TW_ 등)으로 인식
     if re.search(r"_(MY|PH|SG|TH|TW|VN|BR|MX|JP)_", name):
@@ -506,6 +512,96 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
     flagged_items = []
     page_texts = []
 
+    # 다중페이지 연속표 이어받기: 헤더 문구는 각 절의 첫 표에만 있으므로
+    # 마지막으로 본 절(§2 요약/§3 월별)과 병합셀 캐리 상태를 표 루프 밖에 둡니다.
+    last_section = None
+    sum_state = {'carrier': carrier, 'service': '', 'tracking': ''}
+    mon_state = {'month': '', 'carrier': carrier, 'service': ''}
+
+    def _consume_summary_rows(rows):
+        """§2 소포 수령증 요약 표의 데이터 행. 빈 셀은 직전 값(병합셀)을 이어받습니다."""
+        for row in rows:
+            if not row or len(row) < 6:
+                continue
+            r = [(c if c is not None else '') for c in row]
+            if str(r[0]).strip():
+                sum_state['carrier'] = str(r[0]).strip()
+            if str(r[1]).strip():
+                sum_state['service'] = str(r[1]).strip()
+            if str(r[2]).strip():
+                sum_state['tracking'] = str(r[2]).replace('\n', '').strip()
+            currency = str(r[3]).strip().upper()
+            if not re.fullmatch(r'[A-Z]{3}', currency):
+                continue
+            qty = int(_num(r[4], 0))
+            amount = _num(r[5], 0)
+            if qty or amount:
+                entry = {
+                    'carrier': sum_state['carrier'] or carrier,
+                    'service': sum_state['service'],
+                    'tracking_no': sum_state['tracking'],
+                    'currency': currency,
+                    'qty': qty,
+                    'amount': amount,
+                }
+                if amount < 0 or qty < 0:
+                    entry['skip_reason'] = 'negative_amount'
+                    flagged_items.append(entry)
+                else:
+                    summary_items.append(entry)
+
+    def _consume_monthly_rows(rows):
+        """§3 해외배송 내역서 월별 표의 데이터 행. 발행월 병합셀을 이어받습니다."""
+        for row in rows:
+            if not row or len(row) < 6:
+                continue
+            r = [(c if c is not None else '') for c in row]
+            first = str(r[0] or '').strip()
+            mkey = _normalize_month(first)
+            if mkey:
+                mon_state['month'] = mkey
+            if str(r[1]).strip() and '해외배송업체' not in str(r[1]):
+                mon_state['carrier'] = str(r[1]).strip()
+            if str(r[2]).strip() and '배송국가' not in str(r[2]):
+                mon_state['service'] = str(r[2]).strip()
+            currency = str(r[3] or '').strip().upper()
+            if not mon_state['month'] or not re.fullmatch(r'[A-Z]{3}', currency):
+                continue
+            qty = int(_num(r[4], 0))
+            amount = _num(r[5], 0)
+            if not qty and not amount:
+                continue
+            month_start, month_end = _month_start_end(mon_state['month'])
+            if amount < 0 or qty < 0:
+                flagged_items.append({
+                    'month': mon_state['month'], 'currency': currency,
+                    'qty': qty, 'amount': amount,
+                    'skip_reason': 'negative_amount',
+                })
+                continue
+            items.append({
+                'carrier': mon_state['carrier'] or carrier,
+                'service': mon_state['service'],
+                'country': mon_state['service'],
+                'destination': mon_state['service'],
+                'tracking_no': '',
+                'month': mon_state['month'],
+                'date': month_end,
+                'period_start': month_start,
+                'period_end': month_end,
+                'currency': currency,
+                'qty': qty,
+                'amount': amount,
+                'rate_basis': 'monthly_average',
+            })
+
+    def _is_continuation(table):
+        """헤더 없는 표가 연속표인지 판정: 통화단위 열(r[3])에 3글자 통화코드 행이 있어야 합니다."""
+        for row in table:
+            if row and len(row) >= 6 and re.fullmatch(r'[A-Z]{3}', str(row[3] or '').strip().upper()):
+                return True
+        return False
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text()
@@ -548,86 +644,24 @@ def parse_ebay_lincos_pdf(pdf_path: str) -> dict:
                 header_text = ' '.join(str(c or '') for row in table for c in row)
                 # 2. 소포 수령증 요약 표
                 if '현지송장번호' in header_text and '통화단위' in header_text:
-                    cur_carrier = carrier
-                    cur_service = ''
-                    cur_tracking = ''
-                    for row in table[1:]:
-                        if not row or len(row) < 6:
-                            continue
-                        r = [(c if c is not None else '') for c in row]
-                        if str(r[0]).strip():
-                            cur_carrier = str(r[0]).strip()
-                        if str(r[1]).strip():
-                            cur_service = str(r[1]).strip()
-                        if str(r[2]).strip():
-                            cur_tracking = str(r[2]).replace('\n', '').strip()
-                        currency = str(r[3]).strip().upper()
-                        if not re.fullmatch(r'[A-Z]{3}', currency):
-                            continue
-                        qty = int(_num(r[4], 0))
-                        amount = _num(r[5], 0)
-                        if qty or amount:
-                            entry = {
-                                'carrier': cur_carrier or carrier,
-                                'service': cur_service,
-                                'tracking_no': cur_tracking,
-                                'currency': currency,
-                                'qty': qty,
-                                'amount': amount,
-                            }
-                            if amount < 0 or qty < 0:
-                                entry['skip_reason'] = 'negative_amount'
-                                flagged_items.append(entry)
-                            else:
-                                summary_items.append(entry)
+                    last_section = 'summary'
+                    sum_state.update(carrier=carrier, service='', tracking='')
+                    _consume_summary_rows(table[1:])
 
                 # 3. 해외배송 내역서 월별 표
-                if '발행월' in header_text and '통화단위' in header_text and '신고금액' in header_text:
-                    cur_month = ''
-                    cur_carrier = carrier
-                    cur_service = ''
-                    for row in table:
-                        if not row or len(row) < 6:
-                            continue
-                        r = [(c if c is not None else '') for c in row]
-                        first = str(r[0] or '').strip()
-                        mkey = _normalize_month(first)
-                        if mkey:
-                            cur_month = mkey
-                        if str(r[1]).strip() and '해외배송업체' not in str(r[1]):
-                            cur_carrier = str(r[1]).strip()
-                        if str(r[2]).strip() and '배송국가' not in str(r[2]):
-                            cur_service = str(r[2]).strip()
-                        currency = str(r[3] or '').strip().upper()
-                        if not cur_month or not re.fullmatch(r'[A-Z]{3}', currency):
-                            continue
-                        qty = int(_num(r[4], 0))
-                        amount = _num(r[5], 0)
-                        if not qty and not amount:
-                            continue
-                        month_start, month_end = _month_start_end(cur_month)
-                        if amount < 0 or qty < 0:
-                            flagged_items.append({
-                                'month': cur_month, 'currency': currency,
-                                'qty': qty, 'amount': amount,
-                                'skip_reason': 'negative_amount',
-                            })
-                            continue
-                        items.append({
-                            'carrier': cur_carrier or carrier,
-                            'service': cur_service,
-                            'country': cur_service,
-                            'destination': cur_service,
-                            'tracking_no': '',
-                            'month': cur_month,
-                            'date': month_end,
-                            'period_start': month_start,
-                            'period_end': month_end,
-                            'currency': currency,
-                            'qty': qty,
-                            'amount': amount,
-                            'rate_basis': 'monthly_average',
-                        })
+                elif '발행월' in header_text and '통화단위' in header_text and '신고금액' in header_text:
+                    last_section = 'monthly'
+                    mon_state.update(month='', carrier=carrier, service='')
+                    _consume_monthly_rows(table)
+
+                # 다중페이지 연속표: 헤더 문구는 절의 첫 표에만 있으므로,
+                # 헤더 없는 표는 직전 절 규칙과 병합셀 캐리로 이어서 처리합니다.
+                elif (last_section and '사업자등록번호' not in header_text
+                        and _is_continuation(table)):
+                    if last_section == 'summary':
+                        _consume_summary_rows(table)
+                    else:
+                        _consume_monthly_rows(table)
 
     if not period_start or not period_end:
         months = sorted({_normalize_month(it.get('month', '')) for it in items if _normalize_month(it.get('month', ''))})
@@ -737,6 +771,74 @@ def parse_joom_pdf(pdf_path: str) -> dict:
     flagged_items = []
     page_texts = []
 
+    # 다중페이지 연속표 이어받기: 내역서 헤더는 첫 페이지 표에만 있고
+    # 이후 페이지 표는 바로 데이터 행부터 시작하므로, 마지막으로 확인한
+    # 헤더 열 매핑과 통화를 기억했다가 헤더 없는 표에 그대로 적용합니다.
+    last_cols = None
+    last_currency = 'USD'
+
+    def _consume_detail_rows(rows, cols, currency):
+        for row in rows:
+            if not row:
+                continue
+            cells = [(_clean_cell(c) if c is not None else '') for c in row]
+            joined = ' '.join(cells)
+
+            # 합계 행: '조회기간 해외배송 합계 ... USD 254.83'
+            if '합계' in joined:
+                m = re.search(r'([A-Z]{3})\s*([\d,]+(?:\.\d+)?)', joined)
+                if m:
+                    declared_total[m.group(1)] = _num(m.group(2))
+                continue
+
+            i_date = cols['date']
+            i_amount = cols['amount']
+            date_value = _normalize_korean_date(cells[i_date]) if i_date is not None and i_date < len(cells) else ''
+            amount = _num(cells[i_amount]) if i_amount is not None and i_amount < len(cells) else 0.0
+            i_order = cols['order']
+            if amount < 0:
+                # 음수 금액 — 환불·조정으로 보이므로 합계에 섞지 않고 검토 대상으로 돌립니다.
+                flagged_items.append({
+                    'date': date_value, 'currency': currency, 'amount': amount,
+                    'order_id': cells[i_order] if i_order is not None and i_order < len(cells) else '',
+                    'skip_reason': 'negative_amount',
+                })
+                continue
+            if not date_value or not amount:
+                continue
+
+            i_dest = cols['dest']
+            i_service = cols['service']
+            i_track = cols['track']
+            i_name = cols['name']
+            destination = cells[i_dest] if i_dest is not None and i_dest < len(cells) else ''
+            items.append({
+                'service': cells[i_service] if i_service is not None and i_service < len(cells) else '해외배송서비스',
+                'carrier': carrier,
+                'origin': 'KR',
+                'destination': destination,
+                'country': destination,
+                'order_id': cells[i_order] if i_order is not None and i_order < len(cells) else '',
+                'tracking_no': cells[i_track] if i_track is not None and i_track < len(cells) else '',
+                'item_name': cells[i_name] if i_name is not None and i_name < len(cells) else '',
+                'currency': currency,
+                'qty': 1,
+                'amount': amount,
+                'date': date_value,
+                'rate_basis': 'daily',
+            })
+
+    def _is_continuation(table, cols):
+        """헤더 없는 표가 내역서 연속표인지 판정: 발송날짜 열에서 날짜가 읽히거나 합계 행이 있어야 합니다."""
+        i_date = cols['date']
+        for row in table:
+            cells = [(_clean_cell(c) if c is not None else '') for c in row]
+            if i_date is not None and i_date < len(cells) and _normalize_korean_date(cells[i_date]):
+                return True
+            if '해외배송 합계' in ' '.join(cells):
+                return True
+        return False
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text()
@@ -756,12 +858,14 @@ def parse_joom_pdf(pdf_path: str) -> dict:
                     continue
 
                 # 하단 배송업체 정보 표(상호=에이치3네트웍스)는 집계에 쓰지 않습니다.
-                if '위조' in table_text or '업태' in table_text:
+                if '위조' in table_text or '업태' in table_text or '사업자등록번호' in table_text:
                     continue
 
                 # 2. 해외배송 내역서
                 header_idx = _joom_detail_header_index(table)
                 if header_idx is None:
+                    if last_cols and _is_continuation(table, last_cols):
+                        _consume_detail_rows(table, last_cols, last_currency)
                     continue
 
                 headers = [_label_key(c) for c in table[header_idx]]
@@ -772,63 +876,25 @@ def parse_joom_pdf(pdf_path: str) -> dict:
                             return i
                     return None
 
-                i_service = _col('서비스')
-                i_date = _col('발송날짜')
-                i_order = _col('orderid', 'OrderID', 'Order')
-                i_dest = _col('도착국가')
-                i_track = _col('접수번호', '송장')
-                i_amount = _col('금액')
-                i_name = _col('상품명')
+                cols = {
+                    'service': _col('서비스'),
+                    'date': _col('발송날짜'),
+                    'order': _col('orderid', 'OrderID', 'Order'),
+                    'dest': _col('도착국가'),
+                    'track': _col('접수번호', '송장'),
+                    'amount': _col('금액'),
+                    'name': _col('상품명'),
+                }
 
                 # 헤더의 '금액(USD)' 에서 통화코드를 읽습니다.
                 currency = 'USD'
-                if i_amount is not None:
-                    m = re.search(r'\(([A-Z]{3})\)', _clean_cell(table[header_idx][i_amount]))
+                if cols['amount'] is not None:
+                    m = re.search(r'\(([A-Z]{3})\)', _clean_cell(table[header_idx][cols['amount']]))
                     if m:
                         currency = m.group(1)
 
-                for row in table[header_idx + 1:]:
-                    if not row:
-                        continue
-                    cells = [(_clean_cell(c) if c is not None else '') for c in row]
-                    joined = ' '.join(cells)
-
-                    # 합계 행: '조회기간 해외배송 합계 ... USD 254.83'
-                    if '합계' in joined:
-                        m = re.search(r'([A-Z]{3})\s*([\d,]+(?:\.\d+)?)', joined)
-                        if m:
-                            declared_total[m.group(1)] = _num(m.group(2))
-                        continue
-
-                    date_value = _normalize_korean_date(cells[i_date]) if i_date is not None and i_date < len(cells) else ''
-                    amount = _num(cells[i_amount]) if i_amount is not None and i_amount < len(cells) else 0.0
-                    if amount < 0:
-                        # 음수 금액 — 환불·조정으로 보이므로 합계에 섞지 않고 검토 대상으로 돌립니다.
-                        flagged_items.append({
-                            'date': date_value, 'currency': currency, 'amount': amount,
-                            'order_id': cells[i_order] if i_order is not None and i_order < len(cells) else '',
-                            'skip_reason': 'negative_amount',
-                        })
-                        continue
-                    if not date_value or not amount:
-                        continue
-
-                    destination = cells[i_dest] if i_dest is not None and i_dest < len(cells) else ''
-                    items.append({
-                        'service': cells[i_service] if i_service is not None and i_service < len(cells) else '해외배송서비스',
-                        'carrier': carrier,
-                        'origin': 'KR',
-                        'destination': destination,
-                        'country': destination,
-                        'order_id': cells[i_order] if i_order is not None and i_order < len(cells) else '',
-                        'tracking_no': cells[i_track] if i_track is not None and i_track < len(cells) else '',
-                        'item_name': cells[i_name] if i_name is not None and i_name < len(cells) else '',
-                        'currency': currency,
-                        'qty': 1,
-                        'amount': amount,
-                        'date': date_value,
-                        'rate_basis': 'daily',
-                    })
+                last_cols, last_currency = cols, currency
+                _consume_detail_rows(table[header_idx + 1:], cols, currency)
 
     items.sort(key=lambda it: (it.get('date', ''), it.get('order_id', '')))
 
@@ -849,8 +915,25 @@ def parse_joom_pdf(pdf_path: str) -> dict:
         abs(total_by_currency.get(cur, 0.0) - float(value or 0)) > 0.01
         for cur, value in declared_total.items()
     )
+
+    # 표현 등급 (2026-07-31 사용자 확정): 반올림 수준(1통화단위 미만이면서 0.1% 미만)
+    # 차이는 [참고]로 낮춰 표시합니다. 발동 조건 자체는 축소하지 않습니다(조용한 오답 금지).
+    def _mismatch_is_minor(cur, value):
+        diff = abs(total_by_currency.get(cur, 0.0) - float(value or 0))
+        base = max(abs(float(value or 0)), abs(total_by_currency.get(cur, 0.0)))
+        return diff < 1.0 and base > 0 and diff / base < 0.001
+
+    total_mismatch_minor = total_mismatch and all(
+        _mismatch_is_minor(cur, value)
+        for cur, value in declared_total.items()
+        if abs(total_by_currency.get(cur, 0.0) - float(value or 0)) > 0.01
+    )
     if total_mismatch:
-        print(f"  ⚠️ Joom 합계 불일치 - PDF 합계 {declared_total} / 건별 합계 {total_by_currency}")
+        if total_mismatch_minor:
+            print(f"  [참고] Joom 원본 인쇄 합계 {declared_total}가 건별 합산 {total_by_currency}과 "
+                  f"반올림 수준으로 어긋납니다 — 건별 합산으로 집계했습니다")
+        else:
+            print(f"  ⚠️ Joom 합계 불일치 - PDF 합계 {declared_total} / 건별 합계 {total_by_currency}")
 
     print(f"  Joom PDF 인식 - {len(items)}건 / " +
           ", ".join(f"{v:,.2f} {k}" for k, v in total_by_currency.items()))
@@ -875,6 +958,7 @@ def parse_joom_pdf(pdf_path: str) -> dict:
         'declared_total': declared_total,
         'total_by_currency': total_by_currency,
         'total_mismatch': total_mismatch,
+        'total_mismatch_minor': total_mismatch_minor,
         'flagged_items': flagged_items,
         'refund_warnings': refund_warnings,
     }
@@ -944,6 +1028,45 @@ def _parse_qoo10_tables(pdf_path: str) -> dict:
     tracking_no = ""
     qty = 0
     amount = 0.0
+    declared_qty = None
+    declared_amount = None
+    # 다중페이지 연속표 대비: 마지막으로 확인한 §3 헤더 열 매핑을 기억합니다.
+    last_map = None
+    carrier_from_row = False
+
+    def _consume_detail_rows(rows, idx_map):
+        """§3 데이터 행을 전부 합산합니다. 판매처가 여러 행(Qoo10·ETC 등)이어도
+        모두 큐텐 매출로 포함하고, '당기 해외배송 합계' 행은 대조용으로 따로 담습니다."""
+        nonlocal qty, amount, declared_qty, declared_amount, carrier, tracking_no, carrier_from_row
+        i_carrier, i_track, i_qty, i_amt = idx_map
+        for row in rows:
+            if not row:
+                continue
+            row_qty = row_amt = None
+            if i_qty is not None and i_qty < len(row):
+                m = re.search(r"[\d,]+", row[i_qty])
+                if m:
+                    row_qty = int(m.group(0).replace(",", ""))
+            if i_amt is not None and i_amt < len(row):
+                m = re.search(r"[\d,]+(?:\.\d+)?", row[i_amt])
+                if m:
+                    row_amt = float(m.group(0).replace(",", ""))
+            if "당기 해외배송 합계" in " ".join(row):
+                if row_qty is not None:
+                    declared_qty = row_qty
+                if row_amt is not None:
+                    declared_amount = row_amt
+                continue
+            if row_qty is None and row_amt is None:
+                continue
+            # 배송업체·발송번호는 첫 데이터 행을 대표값으로 씁니다.
+            if not carrier_from_row and i_carrier is not None and i_carrier < len(row) and row[i_carrier]:
+                carrier = row[i_carrier]
+                carrier_from_row = True
+            if i_track is not None and i_track < len(row):
+                tracking_no = tracking_no or _clean_tracking_no(row[i_track])
+            qty += row_qty or 0
+            amount += row_amt or 0
 
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -992,27 +1115,14 @@ def _parse_qoo10_tables(pdf_path: str) -> dict:
                             headers = normalized[header_idx]
                             def _idx(keyword):
                                 return next((i for i, c in enumerate(headers) if keyword in c), None)
-                            i_carrier = _idx("해외배송업체")
-                            i_track = _idx("발송번호")
-                            i_qty = _idx("발송수량")
-                            i_amt = _idx("금액(JPY)")
-                            for row in normalized[header_idx + 1:]:
-                                if not row or "당기 해외배송 합계" in " ".join(row):
-                                    continue
-                                if i_carrier is not None and i_carrier < len(row) and row[i_carrier]:
-                                    carrier = row[i_carrier]
-                                if i_track is not None and i_track < len(row):
-                                    tracking_no = _clean_tracking_no(row[i_track]) or tracking_no
-                                if i_qty is not None and i_qty < len(row):
-                                    m = re.search(r"[\d,]+", row[i_qty])
-                                    if m:
-                                        qty = int(m.group(0).replace(",", ""))
-                                if i_amt is not None and i_amt < len(row):
-                                    m = re.search(r"[\d,]+(?:\.\d+)?", row[i_amt])
-                                    if m:
-                                        amount = float(m.group(0).replace(",", ""))
-                                if qty or amount:
-                                    break
+                            last_map = (_idx("해외배송업체"), _idx("발송번호"),
+                                        _idx("발송수량"), _idx("금액(JPY)"))
+                            _consume_detail_rows(normalized[header_idx + 1:], last_map)
+                    elif (last_map is not None
+                          and "사업자" not in table_text and "성명" not in table_text):
+                        # 다중페이지 연속표: 헤더 없는 후속 표를 직전 열 매핑으로 처리합니다.
+                        # (하단 국제로지스틱 정보 표는 사업자·성명 표식으로 걸러짐)
+                        _consume_detail_rows(normalized, last_map)
     except Exception:
         pass
 
@@ -1024,6 +1134,8 @@ def _parse_qoo10_tables(pdf_path: str) -> dict:
         "write_date": write_date,
         "qty": qty,
         "amount": amount,
+        "declared_qty": declared_qty,
+        "declared_amount": declared_amount,
         "tracking_no": tracking_no,
     }
 
@@ -1118,9 +1230,33 @@ def parse_qoo10_pdf(pdf_path: str) -> Optional[dict]:
         print("  큐텐 PDF 수량/금액 파싱 실패 - STEP 2에서 직접 입력 필요")
         return None
 
+    # 내역 행 합산과 인쇄된 '당기 해외배송 합계'를 대조합니다 (조용한 오답 금지).
+    refund_warnings = scan_pdf_text("큐텐재팬", all_text)
+    declared_qty = table_data.get("declared_qty")
+    declared_amount = table_data.get("declared_amount")
+    if declared_amount is not None and amount and abs(float(amount) - float(declared_amount)) > 0.5:
+        diff = abs(float(amount) - float(declared_amount))
+        base = max(abs(float(amount)), abs(float(declared_amount)))
+        if diff < 1.0 and base > 0 and diff / base < 0.001:
+            # 반올림 수준 차이 — 표현만 낮춥니다 (JPY는 정수 단위라 사실상 드묾)
+            refund_warnings.append(
+                f"큐텐재팬: 원본 인쇄 당기합계 {float(declared_amount):,.0f} JPY가 내역 행 합산 "
+                f"{float(amount):,.0f} JPY와 반올림 수준으로 어긋납니다 — 행 합산으로 집계했습니다."
+            )
+        else:
+            refund_warnings.append(
+                f"큐텐재팬: 합계 불일치 — 내역 행 합산 {float(amount):,.0f} JPY / "
+                f"인쇄된 당기합계 {float(declared_amount):,.0f} JPY. 행 합산을 사용했으니 원본을 확인해 주세요."
+            )
+    if declared_qty is not None and qty and int(qty) != int(declared_qty):
+        refund_warnings.append(
+            f"큐텐재팬: 건수 불일치 — 내역 행 합산 {int(qty):,}건 / "
+            f"인쇄된 당기합계 {int(declared_qty):,}건. 행 합산을 사용했으니 원본을 확인해 주세요."
+        )
+
     print(f"  큐텐 PDF 자동인식 - 기간:{period_start}~{period_end} 수량:{qty}건 JPY:{amount:,.0f}")
     return {
-        "refund_warnings": scan_pdf_text("큐텐재팬", all_text),
+        "refund_warnings": refund_warnings,
         "type": "qoo10",
         "submitter": submitter,
         "carrier": table_data.get("carrier") or "국제로지스틱",

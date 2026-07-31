@@ -903,7 +903,12 @@ if process_btn:
                     total_text = ", ".join(f"{amount:,.2f} {cur}" for cur, amount in totals.items())
                     log(f"[OK] Joom: {p.name} / {len(result.get('items', [])):,}건 / {total_text}")
                     if result.get("total_mismatch"):
-                        log(f"[WARN] Joom 합계 불일치: PDF 표기 {result.get('declared_total')} / 건별 {totals}")
+                        if result.get("total_mismatch_minor"):
+                            # 반올림 수준 차이는 표현만 낮춰 안내합니다 (조용한 오답 금지 원칙상 침묵하지 않음)
+                            log(f"[참고] Joom 원본 인쇄 합계 {result.get('declared_total')}가 "
+                                f"건별 합산 {totals}과 반올림 수준으로 어긋남 — 건별 합산으로 집계")
+                        else:
+                            log(f"[WARN] Joom 합계 불일치: PDF 표기 {result.get('declared_total')} / 건별 {totals}")
                 log_refund_warnings(result)
 
             lazada_result = merge_lazada_results(lazada_results)

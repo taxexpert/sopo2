@@ -1190,7 +1190,11 @@ def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
         _style(ws.cell(row=r, column=1), font=FONT_DEFAULT, align=CENTER)
         _style(ws.cell(row=r, column=6), font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT2)
         if joom_data.get('total_mismatch'):
-            ws.cell(row=r, column=7, value='⚠️ 건별 합계와 불일치')
+            if joom_data.get('total_mismatch_minor'):
+                note = '건별 합계와 반올림 수준 차이 (건별 합산 기준 집계)'
+            else:
+                note = '⚠️ 건별 합계와 불일치'
+            ws.cell(row=r, column=7, value=note)
             _style(ws.cell(row=r, column=7), font=SKIP_FONT)
 
 
