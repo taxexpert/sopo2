@@ -1123,10 +1123,14 @@ def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
     _style(ws['A1'], font=FONT_TITLE, align=CENTER)
     ws.merge_cells('A1:I1')
 
+    # 조회기간은 원본 PDF에 인쇄된 기간을 그대로 보여줍니다. 신고기간 필터로 일부를 걸러도
+    # 여기가 좁혀지면 아래 'PDF 합계 표기'와 왜 다른지 추적할 단서가 사라집니다.
+    period_start = joom_data.get('source_period_start') or joom_data.get('period_start', '')
+    period_end = joom_data.get('source_period_end') or joom_data.get('period_end', '')
     info = [
         ('사업자등록번호', sub.get('biz_no', ''), '법인명', sub.get('name', '')),
         ('대표자 성명', sub.get('ceo', ''), '법인 주소', sub.get('address', '')),
-        ('조회기간', f"{joom_data.get('period_start','')} ~ {joom_data.get('period_end','')}",
+        ('조회기간', f"{period_start} ~ {period_end}",
          '작성일자', joom_data.get('write_date', '')),
     ]
     r = 3
@@ -1189,13 +1193,30 @@ def write_joom_sheet(ws, joom_data: dict, rates: dict, submitter: dict = None):
         ws.cell(row=r, column=6, value=sum(float(v or 0) for v in declared.values()))
         _style(ws.cell(row=r, column=1), font=FONT_DEFAULT, align=CENTER)
         _style(ws.cell(row=r, column=6), font=FONT_DEFAULT, align=RIGHT, num_format=NUM_FMT2)
-        if joom_data.get('total_mismatch'):
-            if joom_data.get('total_mismatch_minor'):
-                note = '건별 합계와 반올림 수준 차이 (건별 합산 기준 집계)'
-            else:
-                note = '⚠️ 건별 합계와 불일치'
-            ws.cell(row=r, column=7, value=note)
-            _style(ws.cell(row=r, column=7), font=SKIP_FONT)
+
+    # 위 두 합계가 다를 때는 그 이유를 바로 아래에 적습니다. 숫자 두 개만 나란히 두면
+    # 보는 사람이 오류로 오해합니다 (G열에만 적으면 가로 스크롤 전에는 보이지 않습니다).
+    excluded = joom_data.get('period_excluded') or {}
+    note = ''
+    if excluded:
+        amounts = ', '.join(f"{v:,.2f} {cur}"
+                            for cur, v in sorted((excluded.get('by_currency') or {}).items()))
+        note = (f"※ 신고기간 {excluded.get('start','')} ~ {excluded.get('end','')} 적용 — "
+                f"기간 밖 {excluded.get('count', 0):,}건"
+                + (f"({amounts})" if amounts else '') + " 제외."
+                + (" 위 'PDF 합계 표기'는 원본 조회기간 전체 금액입니다." if declared else ''))
+    elif declared and joom_data.get('total_mismatch'):
+        if joom_data.get('total_mismatch_minor'):
+            note = ("※ 원본 PDF에 인쇄된 합계가 건별 합산과 반올림 수준으로 다릅니다 "
+                    "— 건별 합산을 기준으로 집계했습니다.")
+        else:
+            note = ("⚠️ 원본 PDF에 인쇄된 합계와 건별 합산이 다릅니다 "
+                    "— 건별 합산을 기준으로 집계했습니다. 원본을 확인해 주세요.")
+    if note:
+        r += 1
+        ws.cell(row=r, column=1, value=note)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=9)
+        _style(ws.cell(row=r, column=1), font=SKIP_FONT, align=LEFT)
 
 
 # ── 쇼피파이 주문내역 시트 ──────────────────────────────────────
