@@ -185,15 +185,28 @@ def _filter_pointwise(results, platform, start, end, col, item_key="items"):
         # 쇼피는 통화가 문서 단위라 거래행에 currency 키가 없습니다.
         doc_currency = str(res.get("currency", "") or "")
         kept = []
+        dropped = []
         for it in res.get(item_key, []):
             category = classify_point(date_to_int(it.get("date")), start, end)
             if category == IN_PERIOD:
                 kept.append(deepcopy(it))
             else:
                 col.drop(platform, category, it, currency=doc_currency)
+                dropped.append({**it, "currency": it.get("currency") or doc_currency})
         if not kept:
             continue
         out[item_key] = kept
+        # 시트가 "왜 원본 합계와 다른지"를 스스로 설명할 수 있도록, 무엇이 빠졌는지와
+        # 좁혀지기 전 원본 문서 기간을 남깁니다. _apply_bounds 가 기간을 덮어쓰기 전에 보관합니다.
+        if dropped:
+            out["period_excluded"] = {
+                "count": len(dropped),
+                "by_currency": sum_by_currency(dropped),
+                "start": int_to_date(start),
+                "end": int_to_date(end),
+            }
+        out.setdefault("source_period_start", res.get("period_start", ""))
+        out.setdefault("source_period_end", res.get("period_end", ""))
         _apply_bounds(out, kept, start, end)
         kept_results.append(out)
     return kept_results
@@ -215,8 +228,10 @@ def _filter_joom(joom_results, start, end, col):
         res["total_by_currency"] = sum_by_currency(res["items"])
         # declared_total 은 원본 PDF 표기 합계이므로 그대로 둡니다. 기간 필터로 일부를
         # 뺀 뒤에는 건별 합산과 다른 것이 정상이라, 합계 불일치 경고를 끕니다.
+        # 대신 시트에는 period_excluded 로 "무엇이 빠져서 다른지"를 적습니다.
         res["period_filtered"] = True
         res["total_mismatch"] = False
+        res["total_mismatch_minor"] = False
     return kept_results
 
 
